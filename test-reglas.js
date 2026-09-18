@@ -1,5 +1,5 @@
 // ===== TEST DE REGLAS DEL JUEGO (lógica pura del servidor) =====
-const { ejecutarAtaque } = require('./server');
+const { ejecutarAtaque, ejecutarDivision } = require('./server');
 
 let fallos = 0;
 function check(nombre, condicion, extra) {
@@ -101,6 +101,43 @@ console.log('\n=== TEST 6: Validaciones de ataque inválido ===');
   check('No puede atacar con mano muerta', r1.error === 'Tu mano atacante está muerta', r1);
   const r2 = ejecutarAtaque(p, 'p1', 'der', 'der');
   check('No puede atacar mano muerta del oponente', r2.error === 'La mano objetivo ya está muerta', r2);
+}
+
+console.log('\n=== TEST 7: División reparte en mitades iguales (3+1 → 2+2) ===');
+{
+  const manos = { izq: { count: 3, alive: true }, der: { count: 1, alive: true } };
+  const res = ejecutarDivision(manos);
+  check('División válida (sin error)', !res.error, res);
+  check('Mitad calculada: 2', res.mitad === 2, res);
+  check('Ambas manos quedan con 2', manos.izq.count === 2 && manos.der.count === 2, manos);
+  check('Ambas manos vivas', manos.izq.alive && manos.der.alive);
+}
+
+console.log('\n=== TEST 8: División REVIVE mano muerta (2+muerta → 1+1) ===');
+{
+  const manos = { izq: { count: 2, alive: true }, der: { count: 5, alive: false } };
+  const res = ejecutarDivision(manos);
+  check('División válida (sin error)', !res.error, res);
+  check('Mano muerta REVIVE con 1', manos.der.alive === true && manos.der.count === 1, manos);
+  check('Mano viva queda con 1', manos.izq.count === 1 && manos.izq.alive === true, manos);
+}
+
+console.log('\n=== TEST 9: Divisiones inválidas ===');
+{
+  const impar = { izq: { count: 3, alive: true }, der: { count: 2, alive: true } }; // suma 5
+  const r1 = ejecutarDivision(impar);
+  check('Suma impar no se puede dividir', r1.error === 'La suma de tus dedos no es par', r1);
+  const muertas = { izq: { count: 5, alive: false }, der: { count: 5, alive: false } }; // suma 0
+  const r2 = ejecutarDivision(muertas);
+  check('Sin dedos no se puede dividir', r2.error === 'No tienes suficientes dedos para dividir', r2);
+}
+
+console.log('\n=== TEST 10: División con ambas manos al máximo (4+4 → 4+4) ===');
+{
+  const manos = { izq: { count: 4, alive: true }, der: { count: 4, alive: true } };
+  const res = ejecutarDivision(manos);
+  check('División válida (sin error)', !res.error, res);
+  check('Quedan 4+4', manos.izq.count === 4 && manos.der.count === 4, manos);
 }
 
 console.log('\n========== RESUMEN REGLAS ==========');

@@ -177,6 +177,20 @@ function ejecutarAtaque(partida, jugador, manoAtacante, manoObjetivo) {
   return { ok: true };
 }
 
+// Aplicar división de manos (ACCIÓN LIBRE: no consume turno).
+// Reparte la suma de dedos vivos en mitades iguales y revive manos muertas.
+function ejecutarDivision(manos) {
+  const suma = sumaDedosVivos(manos);
+
+  if (suma % 2 !== 0) return { error: 'La suma de tus dedos no es par' };
+  if (suma < 2) return { error: 'No tienes suficientes dedos para dividir' };
+
+  const mitad = suma / 2;
+  manos.izq = { count: mitad, alive: true };
+  manos.der = { count: mitad, alive: true };
+  return { ok: true, mitad };
+}
+
 // ===== SOCKET.IO =====
 
 io.on('connection', (socket) => {
@@ -352,27 +366,15 @@ io.on('connection', (socket) => {
     const jugador = partida.p1 === username ? 'p1' : partida.p2 === username ? 'p2' : null;
     if (!jugador) return socket.emit('error-juego', { mensaje: 'No perteneces a esta partida' });
 
-    const manos = partida.estado[jugador].manos;
-    const suma = sumaDedosVivos(manos);
-
-    if (suma % 2 !== 0) {
-      return socket.emit('error-juego', { mensaje: 'La suma de tus dedos no es par' });
-    }
-    if (suma < 2) {
-      return socket.emit('error-juego', { mensaje: 'No tienes suficientes dedos para dividir' });
+    const resultado = ejecutarDivision(partida.estado[jugador].manos);
+    if (resultado.error) {
+      return socket.emit('error-juego', { mensaje: resultado.error });
     }
 
-    const mitad = suma / 2;
-    manos.izq = { count: mitad, alive: true };
-    manos.der = { count: mitad, alive: true };
-
-    // Cambiar turno
-    const oponente = jugador === 'p1' ? 'p2' : 'p1';
-    partida.turnoActual = partida.estado[oponente].username;
-
+    // La división es una ACCIÓN LIBRE: el jugador conserva su turno y debe atacar
     emitirAPartida(partida, 'partida-actualizada', {
       partida: vistaPublicaPartida(partida),
-      mensaje: `${username} dividió sus manos en ${mitad} y ${mitad}`
+      mensaje: `${username} dividió sus manos en ${resultado.mitad} y ${resultado.mitad}. ¡Sigue su turno, debe atacar!`
     });
   });
 
@@ -585,4 +587,4 @@ if (require.main === module) {
 }
 
 // Exportar lógica pura para pruebas automatizadas
-module.exports = { ejecutarAtaque, estadoInicialManos, calcularNivel, generarCodigo, io };
+module.exports = { ejecutarAtaque, ejecutarDivision, estadoInicialManos, calcularNivel, generarCodigo, io };

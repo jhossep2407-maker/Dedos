@@ -260,12 +260,12 @@ document.querySelectorAll('.mano').forEach(el => {
   });
 });
 
-// ===== DIVIDIR =====
+// ===== DIVIDIR (acción libre: no pierdes el turno) =====
 dom['btn-dividir'].addEventListener('click', () => {
   const p = config.partida;
   if (!p || !p.enCurso) return;
-  const suma = prompt('Dividir: la suma de tus dedos se reparte en partes iguales (mitad y mitad). ¿Confirmar división? (sí/no)');
-  if (!suma || !suma.toLowerCase().startsWith('s')) return;
+  const confirma = prompt('Divides tus dedos en mitades iguales (revive manos muertas).\nNo pierdes tu turno: después podrás atacar.\n¿Confirmar división? (sí/no)');
+  if (!confirma || !confirma.toLowerCase().startsWith('s')) return;
   config.socket.emit('dividir-manos', { username: config.username, codigo: p.codigo });
   config.manoSeleccionada = null;
 });

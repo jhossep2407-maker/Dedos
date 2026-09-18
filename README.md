@@ -109,10 +109,11 @@ express, socket.io, bcrypt, cors, uuid
    - Si = 5: mano muere simple
    - Si < 5: actualiza count
 
-**Dividir Manos** (cuando suma total es par):
-- Clic botón "Dividir Manos" después de atacar
-- Opciones de redistribución de enteros > 0
-- Ejemplo: 3+1 → 2+2 | 4+0 (inválido) → distribución válida
+**Dividir Manos** (cuando la suma total de tus dedos es par):
+- Es una ACCIÓN LIBRE: NO pierdes el turno
+- En tu turno, clic en "Dividir Manos": tus dedos se reparten en mitades iguales
+- Revive manos muertas. Ejemplo: 3+1 → 2+2 | 2+muerta → 1+1
+- Después de dividir debes ATACAR para terminar tu turno
 
 **Victoria:**
 - Ganas al dejar al oponente sin manos vivas

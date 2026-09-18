@@ -21,9 +21,11 @@ function check(nombre, condicion, extra) {
 
 function esperar(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// Bucle de juego reutilizable: juega hasta que la partida termine
+// Bucle de juego reutilizable: juega hasta que la partida termine.
+// Estrategia: si la suma de dedos es par (>=4), divide (acción libre) y luego ataca.
 async function jugarHastaTerminar(pag1, pag2, maxJugadas = 30) {
   let jugadas = 0;
+  let divisiones = 0;
   let partidaTerminada = false;
 
   while (jugadas < maxJugadas && !partidaTerminada) {
@@ -32,7 +34,7 @@ async function jugarHastaTerminar(pag1, pag2, maxJugadas = 30) {
     if (resVisible) { partidaTerminada = true; break; }
 
     // Leer turno desde pag1
-    const info = await pag1.evaluate(() => ({
+    let info = await pag1.evaluate(() => ({
       turno: config.partida ? config.partida.turnoActual : null,
       estado: config.partida ? config.partida.estado : null,
       enCurso: config.partida ? config.partida.enCurso : false
@@ -43,15 +45,49 @@ async function jugarHastaTerminar(pag1, pag2, maxJugadas = 30) {
     const miJugador = info.estado.p1.username === info.turno ? 'p1' : 'p2';
     const oponente = miJugador === 'p1' ? 'p2' : 'p1';
     const paginaActiva = info.turno === NOMBRE1 ? pag1 : pag2;
+    const turnoAntes = info.turno;
 
-    // Manos vivas (primero izq, luego der)
+    // ===== DIVISIÓN (acción libre: no debe cambiar el turno) =====
+    const sumaMia =
+      (info.estado[miJugador].manos.izq.alive ? info.estado[miJugador].manos.izq.count : 0) +
+      (info.estado[miJugador].manos.der.alive ? info.estado[miJugador].manos.der.count : 0);
+
+    if (sumaMia % 2 === 0 && sumaMia >= 4) {
+      const mitad = sumaMia / 2;
+      console.log(`    ${info.turno} divide sus manos en ${mitad}+${mitad} (acción libre, conserva turno)`);
+      await paginaActiva.click('#btn-dividir'); // el diálogo se responde 'sí' automáticamente
+
+      // Verificar: manos en mitad/mitad (ambas vivas) y turno SIN cambiar
+      const divisionOk = await paginaActiva.waitForFunction(
+        (jug, mitadEsp, turnoPrev) => {
+          const p = config.partida;
+          if (!p) return false;
+          const m = p.estado[jug].manos;
+          return p.turnoActual === turnoPrev &&
+                 m.izq.count === mitadEsp && m.der.count === mitadEsp &&
+                 m.izq.alive && m.der.alive;
+        },
+        { timeout: 4000 },
+        miJugador, mitad, turnoAntes
+      ).then(() => true).catch(() => false);
+      check('División NO cambia el turno', divisionOk);
+      divisiones++;
+
+      // Releer estado tras dividir para el ataque
+      info = await pag1.evaluate(() => ({
+        turno: config.partida ? config.partida.turnoActual : null,
+        estado: config.partida ? config.partida.estado : null,
+        enCurso: config.partida ? config.partida.enCurso : false
+      }));
+    }
+
+    // ===== ATAQUE =====
     const miViva = info.estado[miJugador].manos.izq.alive ? 'izq'
       : (info.estado[miJugador].manos.der.alive ? 'der' : null);
     const objViva = info.estado[oponente].manos.izq.alive ? 'izq'
       : (info.estado[oponente].manos.der.alive ? 'der' : null);
     if (!miViva || !objViva) { console.log('  [ERROR LOGICO] mano viva no encontrada'); break; }
 
-    const turnoAntes = info.turno;
     console.log(`  Jugada ${jugadas + 1}: ${info.turno} ataca con ${miViva} a ${objViva} de ${oponente}`);
 
     // Clic en mi mano, luego en la mano del oponente
@@ -73,7 +109,7 @@ async function jugarHastaTerminar(pag1, pag2, maxJugadas = 30) {
     await esperar(300);
     jugadas++;
   }
-  return jugadas;
+  return { jugadas, divisiones };
 }
 
 async function main() {
@@ -97,6 +133,20 @@ async function main() {
   pag2.on('console', m => { if (m.type() === 'error') erroresConsola.pag2.push(m.text()); });
   pag1.on('pageerror', e => erroresConsola.pag1.push('PAGEERROR: ' + e.message));
   pag2.on('pageerror', e => erroresConsola.pag2.push('PAGEERROR: ' + e.message));
+
+  // Manejador de diálogos (prompt) consciente del mensaje:
+  // - "código de la partida" -> responde con el código
+  // - cualquier otro (división) -> responde "sí"
+  const estadoDialogos = { codigo: null };
+  const manejarDialogo = async (dialog) => {
+    if (dialog.message().includes('código de la partida')) {
+      await dialog.accept(estadoDialogos.codigo || '');
+    } else {
+      await dialog.accept('sí');
+    }
+  };
+  pag1.on('dialog', manejarDialogo);
+  pag2.on('dialog', manejarDialogo);
 
   await pag1.goto(URL, { waitUntil: 'networkidle0' });
   await pag2.goto(URL, { waitUntil: 'networkidle0' });
@@ -142,7 +192,7 @@ async function main() {
 
   // TEST 5: Unirse con código
   console.log('\n=== TEST 5: Unirse a partida (jugador 2) ===');
-  pag2.on('dialog', async dialog => { await dialog.accept(codigoPartida); });
+  estadoDialogos.codigo = codigoPartida;
   await pag2.click('#btn-unirse-partida');
   await esperar(1000);
   check('Tablero visible pag1', await pag1.$eval('#tablero-juego', el => !el.classList.contains('hidden')));
@@ -152,7 +202,9 @@ async function main() {
 
   // TEST 6: Partida 1 completa (por código)
   console.log('\n=== TEST 6: Partida 1 completa (por código) ===');
-  const jugadas1 = await jugarHastaTerminar(pag1, pag2);
+  const juego1 = await jugarHastaTerminar(pag1, pag2);
+  const jugadas1 = juego1.jugadas;
+  console.log(`  Divisiones realizadas: ${juego1.divisiones}`);
 
   const res1 = await pag1.evaluate(() => ({
     visible: !document.getElementById('resultado').classList.contains('hidden'),
@@ -267,7 +319,10 @@ async function main() {
 
   // TEST 9: Partida 2 completa (por reto)
   console.log('\n=== TEST 9: Partida 2 completa (por reto) ===');
-  const jugadas2 = await jugarHastaTerminar(pag1, pag2);
+  const juego2 = await jugarHastaTerminar(pag1, pag2);
+  const jugadas2 = juego2.jugadas;
+  console.log(`  Divisiones realizadas: ${juego2.divisiones}`);
+  check('La regla de división se ejercitó al menos una vez', juego1.divisiones + juego2.divisiones > 0);
 
   const res1b = await pag1.evaluate(() => ({
     visible: !document.getElementById('resultado').classList.contains('hidden'),
