@@ -367,8 +367,71 @@ async function main() {
   const gano2b = res2b.titulo.includes('GANASTE');
   check('Exactamente un ganador en reto', gano1b !== gano2b);
 
-  // TEST 11: Errores de consola en TODA la sesión
-  console.log('\n=== TEST 11: Errores de consola en TODA la sesión ===');
+  // TEST 11: Ranking global
+  console.log('\n=== TEST 11: Ranking global (top 25, podio, puesto propio) ===');
+
+  // Leer EXP de ambos tras las 2 partidas (pantalla de resultado)
+  const exp1 = await pag1.$eval('#exp-display', el => el.textContent);
+  const exp2 = await pag2.$eval('#exp-display', el => el.textContent);
+  const num1 = parseInt(exp1) || 0;
+  const num2 = parseInt(exp2) || 0;
+  console.log(`  EXP final — ${NOMBRE1}: ${exp1} | ${NOMBRE2}: ${exp2}`);
+
+  // Volver al menú y abrir ranking desde pag1
+  await pag1.click('#btn-jugar-de-nuevo');
+  await esperar(300);
+  await pag1.click('#btn-ranking');
+  await esperar(700);
+  check('Pantalla ranking visible', await pag1.$eval('#tela-ranking', el => !el.classList.contains('hidden')));
+
+  const ranking1 = await pag1.evaluate(() => {
+    const filas = Array.from(document.querySelectorAll('#tabla-ranking .fila-ranking:not(.cabecera)')).map(f => ({
+      puesto: f.dataset.puesto,
+      username: f.dataset.username,
+      exp: f.querySelector('.exp').textContent,
+      tieneMedallaPuesto1: f.classList.contains('top1'),
+      tieneMedallaPuesto2: f.classList.contains('top2'),
+      esPropia: f.classList.contains('propia')
+    }));
+    return { filas, miPuesto: document.getElementById('mi-puesto').textContent };
+  });
+
+  check('Ambos usuarios aparecen en el ranking', ranking1.filas.length === 2, ranking1.filas);
+  const [primero, segundo] = ranking1.filas;
+  // Orden esperado por EXP (o alfabético en empate)
+  const esperadoPrimero = num1 > num2 ? NOMBRE1 : (num2 > num1 ? NOMBRE2 : (NOMBRE1 < NOMBRE2 ? NOMBRE1 : NOMBRE2));
+  check(`Puesto #1 correcto: ${primero.username} (medalla ${primero.tieneMedallaPuesto1 ? '🥇' : 'NO'})`,
+    primero.username === esperadoPrimero && primero.puesto === '1' && primero.tieneMedallaPuesto1);
+  check(`Puesto #2 con medalla 🥈 (${segundo.username})`, segundo.puesto === '2' && segundo.tieneMedallaPuesto2);
+  check(`EXP del #1 coincide con su pantalla (${primero.exp})`, parseInt(primero.exp) === Math.max(num1, num2));
+  check(`Mi puesto (#${esperadoPrimero === NOMBRE1 ? 1 : 2}) mostrado: "${ranking1.miPuesto}"`,
+    ranking1.miPuesto === `Tu puesto global: #${esperadoPrimero === NOMBRE1 ? 1 : 2}`);
+  check('Mi fila está destacada (propia)', ranking1.filas.some(f => f.esPropia));
+
+  // Ranking desde pag2: refrescado tras la partida, con su propio puesto
+  await pag2.click('#btn-jugar-de-nuevo');
+  await esperar(300);
+  await pag2.click('#btn-ranking');
+  await esperar(700);
+  const ranking2 = await pag2.evaluate(() => ({
+    filas: Array.from(document.querySelectorAll('#tabla-ranking .fila-ranking:not(.cabecera)')).map(f => ({
+      puesto: f.dataset.puesto,
+      username: f.dataset.username
+    })),
+    miPuesto: document.getElementById('mi-puesto').textContent
+  }));
+  const esperadoPuesto2 = (esperadoPrimero === NOMBRE2) ? 1 : 2;
+  check('pag2 ve el mismo #1', ranking2.filas[0] && ranking2.filas[0].username === esperadoPrimero);
+  check(`pag2 ve su propio puesto #${esperadoPuesto2}: "${ranking2.miPuesto}"`,
+    ranking2.miPuesto === `Tu puesto global: #${esperadoPuesto2}`);
+
+  // Volver al juego en ambas
+  await pag1.click('#btn-volver-juego2');
+  await pag2.click('#btn-volver-juego2');
+  await esperar(300);
+
+  // TEST 12: Errores de consola en TODA la sesión
+  console.log('\n=== TEST 12: Errores de consola en TODA la sesión ===');
   const totalErrores = erroresConsola.pag1.length + erroresConsola.pag2.length;
   console.log(`  Errores pag1: ${erroresConsola.pag1.length}, pag2: ${erroresConsola.pag2.length}`);
   erroresConsola.pag1.forEach(e => console.log(`    PAG1: ${e}`));

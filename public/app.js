@@ -27,7 +27,8 @@ function initDom() {
     'resultado', 'titulo-resultado', 'descripcion-resultado', 'btn-jugar-de-nuevo',
     'solicitudes-lista', 'amigos-lista', 'btn-volver-juego',
     'codigo-amigo-input', 'btn-agregar-amigo',
-    'invitacion-overlay', 'invitacion-texto', 'btn-aceptar-inv', 'btn-rechazar-inv'
+    'invitacion-overlay', 'invitacion-texto', 'btn-aceptar-inv', 'btn-rechazar-inv',
+    'tela-ranking', 'mi-puesto', 'tabla-ranking', 'btn-ranking', 'btn-volver-juego2'
   ];
   ids.forEach(id => dom[id] = document.getElementById(id));
   const faltantes = ids.filter(id => !dom[id]);
@@ -81,6 +82,8 @@ function inicializarSocket() {
 
   config.socket.on('partida-finalizada', (data) => {
     mostrarResultado(data);
+    // Refrescar el ranking tras cada partida (EXP cambió)
+    cargarRanking();
   });
 
   config.socket.on('error-juego', (data) => {
@@ -108,7 +111,7 @@ function inicializarSocket() {
 
 // ===== PANTALLAS =====
 function mostrarPantalla(id) {
-  ['tela-login', 'tela-juego', 'tela-amigos'].forEach(t => {
+  ['tela-login', 'tela-juego', 'tela-amigos', 'tela-ranking'].forEach(t => {
     dom[t].classList.add('hidden');
   });
   dom[id].classList.remove('hidden');
@@ -436,6 +439,89 @@ dom['btn-agregar-amigo'].addEventListener('click', () => {
       notificar('Error', (res && res.error) || 'Error al enviar solicitud', 'error');
     }
   });
+});
+
+// ===== RANKING GLOBAL =====
+
+// Última respuesta del servidor (para re-renderizar sin volver a pedir)
+let ultimoRanking = null;
+
+function cargarRanking() {
+  if (!config.username) return;
+  config.socket.emit('solicitar-ranking', { username: config.username }, (res) => {
+    if (res && res.success) {
+      ultimoRanking = res;
+      renderRanking(res);
+    }
+  });
+}
+
+function renderRanking(datos) {
+  dom['mi-puesto'].textContent = datos.miPuesto
+    ? `Tu puesto global: #${datos.miPuesto}`
+    : 'Tu puesto global: --';
+
+  const tabla = dom['tabla-ranking'];
+  tabla.innerHTML = '';
+
+  // Cabecera
+  const cabecera = document.createElement('div');
+  cabecera.className = 'fila-ranking cabecera';
+  cabecera.innerHTML = `
+    <span class="puesto">#</span>
+    <span class="usuario">USUARIO</span>
+    <span class="exp">EXP</span>
+    <span class="nivel">NIVEL</span>
+  `;
+  tabla.appendChild(cabecera);
+
+  // Top 25 con medallas para el podio
+  const medallas = { 1: '🥇', 2: '🥈', 3: '🥉' };
+  datos.top.forEach(u => {
+    const fila = document.createElement('div');
+    fila.className = 'fila-ranking';
+    if (u.puesto <= 3) fila.classList.add(`top${u.puesto}`);
+    if (u.username === config.username) fila.classList.add('propia');
+    fila.dataset.puesto = u.puesto;
+    fila.dataset.username = u.username;
+    fila.innerHTML = `
+      <span class="puesto">${medallas[u.puesto] || u.puesto}</span>
+      <span class="usuario">${u.username}</span>
+      <span class="exp">${u.exp}</span>
+      <span class="nivel">Nv ${u.nivel}</span>
+    `;
+    tabla.appendChild(fila);
+  });
+
+  // Si estoy FUERA del top: separador + mi fila destacada
+  if (datos.yo) {
+    const sep = document.createElement('div');
+    sep.className = 'separador-ranking';
+    sep.textContent = '· · ·';
+    tabla.appendChild(sep);
+
+    const fila = document.createElement('div');
+    fila.className = 'fila-ranking propia';
+    fila.dataset.puesto = datos.yo.puesto;
+    fila.dataset.username = datos.yo.username;
+    fila.innerHTML = `
+      <span class="puesto">${datos.yo.puesto}</span>
+      <span class="usuario">${datos.yo.username}</span>
+      <span class="exp">${datos.yo.exp}</span>
+      <span class="nivel">Nv ${datos.yo.nivel}</span>
+    `;
+    tabla.appendChild(fila);
+  }
+}
+
+// Abrir la pantalla de ranking (siempre trae datos frescos)
+dom['btn-ranking'].addEventListener('click', () => {
+  mostrarPantalla('tela-ranking');
+  cargarRanking();
+});
+
+dom['btn-volver-juego2'].addEventListener('click', () => {
+  mostrarPantalla('tela-juego');
 });
 
 // ===== COPIAR CÓDIGO =====

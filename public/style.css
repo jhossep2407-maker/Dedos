@@ -607,6 +607,87 @@ body {
 .btn-inv-rechazar { background: var(--error); color: #fff; }
 .btn-inv-rechazar:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(255, 68, 68, 0.4); }
 
+/* ===== RANKING GLOBAL ===== */
+.contenedor-ranking {
+  width: 100%;
+  max-width: 560px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 30px 25px;
+}
+
+#tela-ranking h2 {
+  font-family: 'Orbitron', sans-serif;
+  color: var(--primary);
+  text-align: center;
+  letter-spacing: 4px;
+  margin-bottom: 15px;
+  font-size: 1.3rem;
+}
+
+.mi-puesto {
+  font-family: 'Orbitron', sans-serif;
+  text-align: center;
+  color: var(--alerta);
+  font-size: 1rem;
+  margin-bottom: 18px;
+  padding: 10px;
+  background: var(--surface2);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+.tabla-ranking { max-height: 55vh; overflow-y: auto; padding-right: 4px; }
+
+.fila-ranking {
+  display: grid;
+  grid-template-columns: 60px 1fr 90px 70px;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+}
+
+.fila-ranking .puesto { font-family: 'Orbitron', sans-serif; font-weight: 700; text-align: center; }
+.fila-ranking .usuario { word-break: break-all; font-weight: 500; }
+.fila-ranking .exp { color: var(--alerta); text-align: right; }
+.fila-ranking .nivel { color: var(--secondary); text-align: right; font-size: 0.8rem; }
+
+.fila-ranking.cabecera {
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  background: transparent;
+  border: none;
+  margin-bottom: 4px;
+}
+.fila-ranking.cabecera .exp, .fila-ranking.cabecera .nivel { color: var(--muted); }
+
+/* Podio */
+.fila-ranking.top1 { border-color: #ffd700; background: linear-gradient(135deg, #2a2410, #1a1a24); box-shadow: 0 0 12px rgba(255, 215, 0, 0.2); }
+.fila-ranking.top2 { border-color: #c0c0c0; background: linear-gradient(135deg, #23252c, #1a1a24); }
+.fila-ranking.top3 { border-color: #cd7f32; background: linear-gradient(135deg, #2c2115, #1a1a24); }
+
+/* Mi fila (siempre destacada) */
+.fila-ranking.propia {
+  border-color: var(--primary);
+  box-shadow: 0 0 12px rgba(0, 255, 136, 0.25);
+}
+.fila-ranking.propia .usuario { color: var(--primary); }
+
+.separador-ranking {
+  text-align: center;
+  color: var(--muted);
+  letter-spacing: 8px;
+  margin: 8px 0;
+  font-size: 1rem;
+}
+
 .btn-volver-al-juego {
   width: 100%;
   font-family: 'Orbitron', sans-serif;

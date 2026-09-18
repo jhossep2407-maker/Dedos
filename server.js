@@ -153,6 +153,32 @@ function manejarSalida(socket, username) {
   });
 }
 
+// Construir el ranking global (función pura, testable).
+// Devuelve: top N con puestos, el puesto global del usuario que consulta y,
+// si está FUERA del top, su propia fila (yo) para mostrarla aparte.
+function construirRanking(usersObj, username, limite = 25) {
+  const todos = Object.entries(usersObj)
+    .map(([nombre, u]) => ({ username: nombre, exp: u.exp, nivel: u.nivel }))
+    .sort((a, b) => b.exp - a.exp || a.username.localeCompare(b.username));
+
+  const top = todos.slice(0, limite).map((u, i) => ({ puesto: i + 1, ...u }));
+
+  let miPuesto = null;
+  let yo = null;
+  if (username && usersObj[username]) {
+    miPuesto = todos.findIndex(u => u.username === username) + 1;
+    if (miPuesto > limite) {
+      yo = {
+        puesto: miPuesto,
+        username,
+        exp: usersObj[username].exp,
+        nivel: usersObj[username].nivel
+      };
+    }
+  }
+  return { top, miPuesto, yo };
+}
+
 function finalizarPartida(partida, ganador, motivo) {
   const perdedor = ganador === partida.p1 ? partida.p2 : partida.p1;
   partida.enCurso = false;
@@ -510,6 +536,13 @@ io.on('connection', (socket) => {
     fn({ success: true, amigos, solicitudes });
   });
 
+  // ---------- RANKING GLOBAL ----------
+  socket.on('solicitar-ranking', (data, callback) => {
+    const fn = typeof callback === 'function' ? callback : () => {};
+    const { username } = data || {};
+    fn({ success: true, ...construirRanking(users, username, 25) });
+  });
+
   // ---------- AMIGOS: AGREGAR ----------
   socket.on('agregar-amigo', (data, callback) => {
     const fn = typeof callback === 'function' ? callback : () => {};
@@ -659,4 +692,4 @@ if (require.main === module) {
 }
 
 // Exportar lógica pura para pruebas automatizadas
-module.exports = { ejecutarAtaque, ejecutarDivision, estadoInicialManos, calcularNivel, generarCodigo, io };
+module.exports = { ejecutarAtaque, ejecutarDivision, construirRanking, estadoInicialManos, calcularNivel, generarCodigo, io };

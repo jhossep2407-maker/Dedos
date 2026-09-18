@@ -18,7 +18,8 @@ const idsRequeridos = [
   'resultado', 'titulo-resultado', 'descripcion-resultado', 'btn-jugar-de-nuevo',
   'solicitudes-lista', 'amigos-lista', 'btn-volver-juego',
   'codigo-amigo-input', 'btn-agregar-amigo',
-  'invitacion-overlay', 'invitacion-texto', 'btn-aceptar-inv', 'btn-rechazar-inv'
+  'invitacion-overlay', 'invitacion-texto', 'btn-aceptar-inv', 'btn-rechazar-inv',
+  'tela-ranking', 'mi-puesto', 'tabla-ranking', 'btn-ranking', 'btn-volver-juego2'
 ];
 
 let faltantes = [];

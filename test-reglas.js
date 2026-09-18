@@ -1,5 +1,5 @@
 // ===== TEST DE REGLAS DEL JUEGO (lógica pura del servidor) =====
-const { ejecutarAtaque, ejecutarDivision } = require('./server');
+const { ejecutarAtaque, ejecutarDivision, construirRanking } = require('./server');
 
 let fallos = 0;
 function check(nombre, condicion, extra) {
@@ -138,6 +138,58 @@ console.log('\n=== TEST 10: División con ambas manos al máximo (4+4 → 4+4) =
   const res = ejecutarDivision(manos);
   check('División válida (sin error)', !res.error, res);
   check('Quedan 4+4', manos.izq.count === 4 && manos.der.count === 4, manos);
+}
+
+console.log('\n=== TEST 11: Ranking básico (orden por EXP) ===');
+{
+  const users = {
+    alfa: { exp: 100, nivel: 2 },
+    beta: { exp: 300, nivel: 2 },
+    gamma: { exp: 50, nivel: 1 }
+  };
+  const r = construirRanking(users, 'beta');
+  check('3 en el top', r.top.length === 3, r.top);
+  check('Puesto 1 es beta (300 EXP)', r.top[0].username === 'beta' && r.top[0].puesto === 1);
+  check('Puesto 2 es alfa (100 EXP)', r.top[1].username === 'alfa' && r.top[1].puesto === 2);
+  check('Puesto 3 es gamma (50 EXP)', r.top[2].username === 'gamma' && r.top[2].puesto === 3);
+  check('Mi puesto correcto (#1)', r.miPuesto === 1);
+  check('Estando en el top, "yo" es null', r.yo === null);
+}
+
+console.log('\n=== TEST 12: Empate de EXP → orden alfabético ===');
+{
+  const users = {
+    zeta: { exp: 100, nivel: 2 },
+    alfa: { exp: 100, nivel: 2 }
+  };
+  const r = construirRanking(users, null);
+  check('Empate: alfa primero (alfabético)', r.top[0].username === 'alfa' && r.top[1].username === 'zeta', r.top);
+}
+
+console.log('\n=== TEST 13: Usuario FUERA del top 25 → solo su fila aparte ===');
+{
+  const users = {};
+  for (let i = 1; i <= 30; i++) users[`user${String(i).padStart(2, '0')}`] = { exp: i * 10, nivel: 1 };
+  users['elultimo'] = { exp: 5, nivel: 1 }; // el peor: puesto 31
+
+  const r = construirRanking(users, 'elultimo', 25);
+  check('Top tiene exactamente 25', r.top.length === 25, r.top.length);
+  check('El top NO incluye al usuario', !r.top.some(u => u.username === 'elultimo'));
+  check('Mi puesto global es 31', r.miPuesto === 31, r.miPuesto);
+  check('Mi fila aparte existe (yo)', r.yo && r.yo.username === 'elultimo' && r.yo.puesto === 31, r.yo);
+  // user30 es #1 (300 EXP) → el #25 es quien tiene 60 EXP: user06
+  check('Puesto 25 correcto (user06, 60 EXP)', r.top[24].puesto === 25 && r.top[24].username === 'user06', r.top[24]);
+}
+
+console.log('\n=== TEST 14: Usuario dentro del top con lista grande ===');
+{
+  const users = {};
+  for (let i = 1; i <= 30; i++) users[`user${String(i).padStart(2, '0')}`] = { exp: i * 10, nivel: 1 };
+
+  const r = construirRanking(users, 'user10', 25); // user10 = exp 100 → puesto 21
+  check('Mi puesto global es 21', r.miPuesto === 21, r.miPuesto);
+  check('Estoy dentro del top', r.top.some(u => u.username === 'user10'));
+  check('Estando en el top, "yo" es null', r.yo === null);
 }
 
 console.log('\n========== RESUMEN REGLAS ==========');
