@@ -1,0 +1,10 @@
+# Dependencias (Render las instala con npm install)
+node_modules/
+
+# Archivos de debug/prueba temporal
+*.log
+*.png
+
+# Sistema
+Thumbs.db
+.DS_Store

@@ -1,0 +1,382 @@
+// ===== DEDITOS - CLIENTE =====
+
+const config = {
+  socket: null,
+  conectado: false,
+  username: null,
+  miCodigo: null,
+  partida: null,      // vista publica de la partida
+  miJugador: null,   // 'p1' | 'p2'
+  manoSeleccionada: null // 'izq' | 'der' seleccionada para atacar
+};
+
+// ===== REFERENCIAS DOM =====
+const dom = {};
+function initDom() {
+  const ids = [
+    'tela-login', 'tela-registrar', 'tela-juego', 'tela-amigos',
+    'form-login', 'form-registrar', 'username', 'password',
+    'username-reg', 'password-reg', 'mostrar-registrar', 'mostrar-login',
+    'username-display', 'nivel-display', 'exp-display', 'indicador-turno', 'btn-salir',
+    'panel-login',
+    'panel-partida', 'mi-codigo-amigo', 'btn-copiar-codigo-amigo',
+    'btn-crear-partida', 'btn-unirse-partida', 'btn-amigos', 'estado-partida',
+    'tablero-juego', 'nombre-p1', 'nombre-p2', 'mano-p1-izq', 'mano-p1-der',
+    'mano-p2-izq', 'mano-p2-der', 'total-p1', 'total-p2', 'codigo-sala',
+    'modo-actual', 'mensaje-central', 'acciones-juego', 'hint-accion', 'btn-dividir',
+    'resultado', 'titulo-resultado', 'descripcion-resultado', 'btn-jugar-de-nuevo',
+    'solicitudes-lista', 'amigos-lista', 'btn-volver-juego',
+    'codigo-amigo-input', 'btn-agregar-amigo'
+  ];
+  ids.forEach(id => dom[id] = document.getElementById(id));
+  const faltantes = ids.filter(id => !dom[id]);
+  if (faltantes.length) console.error('IDs faltantes en HTML:', faltantes);
+}
+
+// ===== INIT INMEDIATO (el script va al final del body: DOM ya listo) =====
+initDom();
+inicializarSocket();
+
+// ===== SOCKET =====
+function inicializarSocket() {
+  config.socket = io();
+
+  config.socket.on('connect', () => {
+    config.conectado = true;
+    console.log('Socket conectado:', config.socket.id);
+  });
+
+  config.socket.on('connect_error', () => {
+    config.conectado = false;
+    notificar('Error', 'No se pudo conectar con el servidor', 'error');
+  });
+
+  // Eventos de partida
+  config.socket.on('partida-iniciada', (data) => {
+    notificar('¡A jugar!', data.mensaje, 'exito');
+    alIniciarPartida(data.partida);
+  });
+
+  config.socket.on('partida-actualizada', (data) => {
+    config.partida = data.partida;
+    renderPartida();
+    dom['mensaje-central'].textContent = data.mensaje;
+  });
+
+  config.socket.on('partida-finalizada', (data) => {
+    mostrarResultado(data);
+  });
+
+  config.socket.on('error-juego', (data) => {
+    notificar('Movimiento inválido', data.mensaje, 'error');
+  });
+
+  // Eventos de amistad
+  config.socket.on('solicitud-amistad-recibida', (data) => {
+    notificar('Nueva solicitud', `${data.de} quiere ser tu amigo`, 'alerta');
+  });
+
+  config.socket.on('amistad-aceptada', (data) => {
+    notificar('Amigos', `${data.de} aceptó tu solicitud`, 'exito');
+  });
+}
+
+// ===== PANTALLAS =====
+function mostrarPantalla(id) {
+  ['tela-login', 'tela-juego', 'tela-amigos'].forEach(t => {
+    dom[t].classList.add('hidden');
+  });
+  dom[id].classList.remove('hidden');
+}
+
+// ===== LOGIN / REGISTRO =====
+dom['form-login'].addEventListener('submit', (e) => {
+  e.preventDefault();
+  const username = dom['username'].value.trim();
+  const password = dom['password'].value;
+  if (!username || !password) return notificar('Error', 'Completa todos los campos', 'error');
+
+  config.socket.emit('login', { username, password }, (res) => {
+    if (res && res.success) {
+      entrarAlJuego(res);
+    } else {
+      notificar('Error', (res && res.error) || 'Login fallido', 'error');
+    }
+  });
+});
+
+dom['form-registrar'].addEventListener('submit', (e) => {
+  e.preventDefault();
+  const username = dom['username-reg'].value.trim();
+  const password = dom['password-reg'].value;
+  if (!username || !password) return notificar('Error', 'Completa todos los campos', 'error');
+
+  config.socket.emit('registrar', { username, password }, (res) => {
+    if (res && res.success) {
+      entrarAlJuego(res);
+    } else {
+      notificar('Error', (res && res.error) || 'Error al registrarse', 'error');
+    }
+  });
+});
+
+dom['mostrar-registrar'].addEventListener('click', () => {
+  dom['panel-login'].classList.add('hidden');
+  dom['tela-registrar'].classList.remove('hidden');
+});
+
+dom['mostrar-login'].addEventListener('click', () => {
+  dom['tela-registrar'].classList.add('hidden');
+  dom['panel-login'].classList.remove('hidden');
+});
+
+function entrarAlJuego(res) {
+  config.username = res.usuario;
+  config.miCodigo = res.codigo;
+  dom['username-display'].textContent = res.usuario;
+  dom['nivel-display'].textContent = `Nivel ${res.nivel}`;
+  dom['exp-display'].textContent = `${res.exp} EXP`;
+  dom['mi-codigo-amigo'].textContent = res.codigo;
+  dom['estado-partida'].textContent = 'Crea una partida o únete con un código';
+  mostrarPantalla('tela-juego');
+  notificar('Bienvenido', `¡Hola ${res.usuario}!`, 'exito');
+}
+
+// ===== PARTIDAS =====
+dom['btn-crear-partida'].addEventListener('click', () => {
+  config.socket.emit('crear-partida', { username: config.username }, (res) => {
+    if (res && res.success) {
+      dom['codigo-sala'].textContent = res.codigo;
+      dom['estado-partida'].textContent = `Partida creada. Código: ${res.codigo} — esperando oponente...`;
+      notificar('Partida creada', `Comparte el código ${res.codigo}`, 'exito');
+    } else {
+      notificar('Error', (res && res.error) || 'No se pudo crear', 'error');
+    }
+  });
+});
+
+dom['btn-unirse-partida'].addEventListener('click', () => {
+  const codigo = prompt('Ingresa el código de la partida:');
+  if (!codigo) return;
+  config.socket.emit('unirse-partida', { username: config.username, codigo: codigo.toUpperCase().trim() }, (res) => {
+    if (res && res.success) {
+      dom['codigo-sala'].textContent = res.codigo;
+    } else {
+      notificar('Error', (res && res.error) || 'Código inválido', 'error');
+    }
+  });
+});
+
+function alIniciarPartida(partida) {
+  config.partida = partida;
+  config.miJugador = partida.p1 === config.username ? 'p1' : 'p2';
+  config.manoSeleccionada = null;
+  dom['panel-partida'].classList.add('hidden');
+  dom['tablero-juego'].classList.remove('hidden');
+  dom['acciones-juego'].classList.remove('hidden');
+  dom['codigo-sala'].textContent = partida.codigo;
+  dom['nombre-p1'].textContent = partida.p1;
+  dom['nombre-p2'].textContent = partida.p2;
+  dom['resultado'].classList.add('hidden');
+  renderPartida();
+}
+
+// ===== RENDER DE PARTIDA =====
+function renderPartida() {
+  const p = config.partida;
+  if (!p || !p.enCurso) return;
+
+  ['p1', 'p2'].forEach(j => {
+    const manos = p.estado[j].manos;
+    ['izq', 'der'].forEach(lado => {
+      const el = dom[`mano-${j}-${lado}`];
+      const mano = manos[lado];
+      el.querySelector('.dedos').textContent = mano.count;
+      el.querySelector('.estado').textContent = mano.alive ? 'Viva' : 'MUERTA';
+      el.classList.toggle('muerta', !mano.alive);
+      el.classList.toggle('seleccionada', config.miJugador === j && config.manoSeleccionada === lado);
+    });
+    dom[`total-${j}`].textContent =
+      (manos.izq.alive ? manos.izq.count : 0) + (manos.der.alive ? manos.der.count : 0);
+  });
+
+  const esMiTurno = p.turnoActual === config.username;
+  dom['indicador-turno'].textContent = esMiTurno ? 'ES TU TURNO' : `Turno de: ${p.turnoActual}`;
+  dom['indicador-turno'].classList.toggle('tu-turno', esMiTurno);
+  dom['hint-accion'].textContent = esMiTurno
+    ? (config.manoSeleccionada ? 'Ahora toca la mano ENEMIGA a atacar' : 'Toca una de TUS manos')
+    : 'Espera tu turno...';
+
+  // Botón dividir: mi turno + suma par >= 2
+  const misManos = p.estado[config.miJugador].manos;
+  const suma = (misManos.izq.alive ? misManos.izq.count : 0) + (misManos.der.alive ? misManos.der.count : 0);
+  dom['btn-dividir'].disabled = !(esMiTurno && suma % 2 === 0 && suma >= 2);
+}
+
+// ===== INTERACCIÓN: ATACAR =====
+document.querySelectorAll('.mano').forEach(el => {
+  el.addEventListener('click', () => {
+    const p = config.partida;
+    if (!p || !p.enCurso) return;
+    if (p.turnoActual !== config.username) return;
+
+    // id = mano-p1-izq etc
+    const match = el.id.match(/^mano-(p1|p2)-(izq|der)$/);
+    if (!match) return;
+    const jugador = match[1];
+    const lado = match[2];
+    const mano = p.estado[jugador].manos[lado];
+    if (!mano.alive) return notificar('Inválido', 'Esa mano está muerta', 'error');
+
+    if (jugador === config.miJugador) {
+      // Seleccionar mano atacante
+      config.manoSeleccionada = lado;
+      renderPartida();
+    } else {
+      // Atacar mano enemiga
+      if (!config.manoSeleccionada) {
+        return notificar('Espera', 'Primero selecciona TU mano atacante', 'alerta');
+      }
+      const atacante = config.manoSeleccionada;
+      config.manoSeleccionada = null;
+      config.socket.emit('atacar', {
+        username: config.username,
+        codigo: p.codigo,
+        manoAtacante: atacante,
+        manoObjetivo: lado
+      });
+    }
+  });
+});
+
+// ===== DIVIDIR =====
+dom['btn-dividir'].addEventListener('click', () => {
+  const p = config.partida;
+  if (!p || !p.enCurso) return;
+  const suma = prompt('Dividir: la suma de tus dedos se reparte en partes iguales (mitad y mitad). ¿Confirmar división? (sí/no)');
+  if (!suma || !suma.toLowerCase().startsWith('s')) return;
+  config.socket.emit('dividir-manos', { username: config.username, codigo: p.codigo });
+  config.manoSeleccionada = null;
+});
+
+// ===== RESULTADO =====
+function mostrarResultado(data) {
+  config.partida = null;
+  dom['tablero-juego'].classList.add('hidden');
+  dom['acciones-juego'].classList.add('hidden');
+  dom['resultado'].classList.remove('hidden');
+
+  const gane = data.ganador === config.username;
+  dom['titulo-resultado'].textContent = gane ? '¡GANASTE!' : 'Perdiste...';
+  dom['descripcion-resultado'].textContent =
+    `Ganador: ${data.ganador} (${data.motivo}). ` +
+    `Tus EXP: +${gane ? data.expGanador : data.expPerdedor}`;
+
+  const perfil = gane ? data.perfilGanador : data.perfilPerdedor;
+  if (perfil) {
+    dom['exp-display'].textContent = `${perfil.exp} EXP`;
+    dom['nivel-display'].textContent = `Nivel ${perfil.nivel}`;
+  }
+  notificar(gane ? '¡Victoria!' : 'Derrota', data.motivo, gane ? 'exito' : 'error');
+}
+
+dom['btn-jugar-de-nuevo'].addEventListener('click', () => {
+  dom['resultado'].classList.add('hidden');
+  dom['panel-partida'].classList.remove('hidden');
+  dom['estado-partida'].textContent = 'Crea una partida o únete con un código';
+});
+
+// ===== AMIGOS =====
+dom['btn-amigos'].addEventListener('click', () => {
+  mostrarPantalla('tela-amigos');
+  cargarAmigos();
+});
+
+dom['btn-volver-juego'].addEventListener('click', () => {
+  mostrarPantalla('tela-juego');
+});
+
+function cargarAmigos() {
+  config.socket.emit('solicitar-amigos', { username: config.username }, (res) => {
+    if (!res || !res.success) return;
+    // Solicitudes
+    dom['solicitudes-lista'].innerHTML = '';
+    res.solicitudes.forEach(s => {
+      const div = document.createElement('div');
+      div.className = 'solicitud-item';
+      div.innerHTML = `<span class="nombre-solicitante">${s.de}</span>`;
+      const btn = document.createElement('button');
+      btn.textContent = 'Aceptar';
+      btn.className = 'btn-mini';
+      btn.addEventListener('click', () => {
+        config.socket.emit('aceptar-amistad', { username: config.username, de: s.de }, (r) => {
+          if (r && r.success) {
+            notificar('Amigos', `¡${s.de} y tú ahora son amigos!`, 'exito');
+            cargarAmigos();
+          } else {
+            notificar('Error', (r && r.error) || 'Error al aceptar', 'error');
+          }
+        });
+      });
+      div.appendChild(btn);
+      dom['solicitudes-lista'].appendChild(div);
+    });
+    if (res.solicitudes.length === 0) {
+      dom['solicitudes-lista'].innerHTML = '<p class="vacio">Sin solicitudes pendientes</p>';
+    }
+
+    // Amigos
+    dom['amigos-lista'].innerHTML = '';
+    res.amigos.forEach(a => {
+      const div = document.createElement('div');
+      div.className = `amigo-item ${a.online ? 'activo' : 'inactivo'}`;
+      div.innerHTML = `
+        <div class="circulo-estado-amigo ${a.online ? 'circulo-verde' : 'circulo-rojo'}"></div>
+        <div class="nombre-amigo">${a.nombre}</div>
+        <div class="estado-texto">${a.online ? 'En línea' : 'Desconectado'}</div>
+      `;
+      dom['amigos-lista'].appendChild(div);
+    });
+    if (res.amigos.length === 0) {
+      dom['amigos-lista'].innerHTML = '<p class="vacio">Aún no tienes amigos. ¡Agrega uno con su código!</p>';
+    }
+  });
+}
+
+dom['btn-agregar-amigo'].addEventListener('click', () => {
+  const codigoAmigo = dom['codigo-amigo-input'].value.trim();
+  if (!codigoAmigo) return notificar('Error', 'Ingresa un código', 'error');
+  config.socket.emit('agregar-amigo', { username: config.username, codigoAmigo }, (res) => {
+    if (res && res.success) {
+      notificar('Enviado', res.mensaje, 'exito');
+      dom['codigo-amigo-input'].value = '';
+    } else {
+      notificar('Error', (res && res.error) || 'Error al enviar solicitud', 'error');
+    }
+  });
+});
+
+// ===== COPIAR CÓDIGO =====
+dom['btn-copiar-codigo-amigo'].addEventListener('click', () => {
+  navigator.clipboard.writeText(config.miCodigo || '').then(() => {
+    notificar('Copiado', 'Tu código de amigo está en el portapapeles', 'exito');
+  });
+});
+
+// ===== SALIR =====
+dom['btn-salir'].addEventListener('click', () => {
+  location.reload();
+});
+
+// ===== NOTIFICACIONES =====
+function notificar(titulo, mensaje, tipo) {
+  const notif = document.createElement('div');
+  notif.className = `notificacion ${tipo}`;
+  notif.innerHTML = `<strong>${titulo}</strong><span>${mensaje}</span>`;
+  document.body.appendChild(notif);
+  setTimeout(() => notif.classList.add('visible'), 10);
+  setTimeout(() => {
+    notif.classList.remove('visible');
+    setTimeout(() => notif.remove(), 300);
+  }, 3000);
+}

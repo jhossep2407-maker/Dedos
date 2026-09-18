@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Deditos - Juego Multijugador</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>✋</text></svg>">
+  <link rel="stylesheet" href="style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Pantalla de Login -->
+  <div id="tela-login" class="tela tela-active">
+    <div class="contenedor">
+      <h1 class="titulo-juego">DEDITOS</h1>
+      <div class="panel-login" id="panel-login">
+        <h2>INICIAR SESIÓN</h2>
+        <form id="form-login">
+          <div class="grupo-input">
+            <input type="text" id="username" placeholder="Nombre de usuario" autocomplete="username" required>
+          </div>
+          <div class="grupo-input">
+            <input type="password" id="password" placeholder="Contraseña" autocomplete="current-password" required>
+          </div>
+          <button type="submit" class="btn-entrar">ENTRAR</button>
+        </form>
+        <div class="opciones">
+          <span>¿No tienes cuenta?</span>
+          <button type="button" class="btn-registrar" id="mostrar-registrar">REGÍSTRATE</button>
+        </div>
+      </div>
+
+      <div id="tela-registrar" class="panel-login hidden">
+        <h2>CREAR CUENTA</h2>
+        <form id="form-registrar">
+          <div class="grupo-input">
+            <input type="text" id="username-reg" placeholder="Nombre de usuario" autocomplete="username" required>
+          </div>
+          <div class="grupo-input">
+            <input type="password" id="password-reg" placeholder="Contraseña (mínimo 4 caracteres)" autocomplete="new-password" minlength="4" required>
+          </div>
+          <button type="submit" class="btn-entrar">CREAR CUENTA</button>
+        </form>
+        <button type="button" class="btn-volver" id="mostrar-login">Volver al login</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pantalla Principal del Juego -->
+  <div id="tela-juego" class="tela hidden">
+    <div class="header-juego">
+      <div class="info-jugador">
+        <span id="username-display">Bienvenido</span>
+        <span id="nivel-display">Nivel 1</span>
+        <span id="exp-display">0 EXP</span>
+      </div>
+      <div class="indicador-turno" id="indicador-turno">Esperando partida...</div>
+      <button id="btn-salir" class="btn-salir">Salir</button>
+    </div>
+
+    <!-- Panel de acciones de partida (antes de empezar) -->
+    <div id="panel-partida" class="panel-partida">
+      <div class="mi-codigo">
+        <span>Tu código de amigo:</span>
+        <strong id="mi-codigo-amigo">---</strong>
+        <button id="btn-copiar-codigo-amigo" class="btn-mini">Copiar</button>
+      </div>
+      <div class="acciones-partida">
+        <button id="btn-crear-partida" class="btn-accion">Crear Partida</button>
+        <button id="btn-unirse-partida" class="btn-accion">Unirse con Código</button>
+        <button id="btn-amigos" class="btn-accion">Amigos</button>
+      </div>
+      <div id="estado-partida" class="estado-partida"></div>
+    </div>
+
+    <div id="tablero-juego" class="tablero-juego hidden">
+      <div class="jugador" id="jugador-1">
+        <h3 id="nombre-p1">Jugador 1</h3>
+        <div class="manos">
+          <div class="mano izq" id="mano-p1-izq">
+            <span class="dedos">1</span>
+            <span class="estado">Viva</span>
+          </div>
+          <div class="mano der" id="mano-p1-der">
+            <span class="dedos">1</span>
+            <span class="estado">Viva</span>
+          </div>
+        </div>
+        <div class="estadisticas-p">
+          <span>Total:</span> <span id="total-p1">2</span>
+        </div>
+      </div>
+
+      <div class="centro">
+        <div class="codigo-sala">
+          <span>Código: <strong id="codigo-sala">---</strong></span>
+        </div>
+        <div class="modo-juego">
+          <span id="modo-actual">Partida Rápida</span>
+        </div>
+        <div id="mensaje-central" class="mensaje-central"></div>
+      </div>
+
+      <div class="jugador" id="jugador-2">
+        <h3 id="nombre-p2">Jugador 2</h3>
+        <div class="manos">
+          <div class="mano izq" id="mano-p2-izq">
+            <span class="dedos">1</span>
+            <span class="estado">Viva</span>
+          </div>
+          <div class="mano der" id="mano-p2-der">
+            <span class="dedos">1</span>
+            <span class="estado">Viva</span>
+          </div>
+        </div>
+        <div class="estadisticas-p">
+          <span>Total:</span> <span id="total-p2">2</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="acciones hidden" id="acciones-juego">
+      <span class="hint-accion" id="hint-accion">Selecciona tu mano para atacar</span>
+      <button id="btn-dividir" class="btn-dividir" disabled>Dividir Manos</button>
+    </div>
+
+    <div id="resultado" class="resultado hidden">
+      <h4 id="titulo-resultado"></h4>
+      <p id="descripcion-resultado"></p>
+      <button id="btn-jugar-de-nuevo" class="btn-jugar-de-nuevo">Volver al menú</button>
+    </div>
+  </div>
+
+  <!-- Pantalla de Amigos -->
+  <div id="tela-amigos" class="tela hidden">
+    <div class="contenedor">
+      <h2>AMIGOS</h2>
+      <div class="agregar-amigo">
+        <h3>Agregar por código</h3>
+        <input type="text" id="codigo-amigo-input" placeholder="Código de tu amigo (ej: XK4TP9)">
+        <button id="btn-agregar-amigo" class="btn-accion">Enviar solicitud</button>
+      </div>
+      <div class="solicitudes-pendientes">
+        <h3>Solicitudes entrantes</h3>
+        <div id="solicitudes-lista" class="lista-solicitudes"></div>
+      </div>
+      <div class="lista-amigos">
+        <h3>Mis amigos</h3>
+        <div id="amigos-lista" class="lista-amigos-contenedor"></div>
+      </div>
+      <button id="btn-volver-juego" class="btn-volver-al-juego">Volver al juego</button>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
