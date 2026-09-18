@@ -26,7 +26,8 @@ function initDom() {
     'modo-actual', 'mensaje-central', 'acciones-juego', 'hint-accion', 'btn-dividir',
     'resultado', 'titulo-resultado', 'descripcion-resultado', 'btn-jugar-de-nuevo',
     'solicitudes-lista', 'amigos-lista', 'btn-volver-juego',
-    'codigo-amigo-input', 'btn-agregar-amigo'
+    'codigo-amigo-input', 'btn-agregar-amigo',
+    'invitacion-overlay', 'invitacion-texto', 'btn-aceptar-inv', 'btn-rechazar-inv'
   ];
   ids.forEach(id => dom[id] = document.getElementById(id));
   const faltantes = ids.filter(id => !dom[id]);
@@ -78,6 +79,15 @@ function inicializarSocket() {
 
   config.socket.on('amistad-aceptada', (data) => {
     notificar('Amigos', `${data.de} aceptó tu solicitud`, 'exito');
+  });
+
+  // Eventos de reto (invitación a partida)
+  config.socket.on('invitacion-recibida', (data) => {
+    mostrarInvitacion(data.de);
+  });
+
+  config.socket.on('invitacion-rechazada', (data) => {
+    notificar('Reto rechazado', `${data.de} rechazó tu invitación`, 'error');
   });
 }
 
@@ -171,6 +181,7 @@ function alIniciarPartida(partida) {
   config.partida = partida;
   config.miJugador = partida.p1 === config.username ? 'p1' : 'p2';
   config.manoSeleccionada = null;
+  mostrarPantalla('tela-juego'); // por si estábamos en la pantalla de amigos
   dom['panel-partida'].classList.add('hidden');
   dom['tablero-juego'].classList.remove('hidden');
   dom['acciones-juego'].classList.remove('hidden');
@@ -329,12 +340,26 @@ function cargarAmigos() {
     dom['amigos-lista'].innerHTML = '';
     res.amigos.forEach(a => {
       const div = document.createElement('div');
-      div.className = `amigo-item ${a.online ? 'activo' : 'inactivo'}`;
+      div.className = `amigo-item ${a.online ? 'activo retador' : 'inactivo'}`;
       div.innerHTML = `
         <div class="circulo-estado-amigo ${a.online ? 'circulo-verde' : 'circulo-rojo'}"></div>
         <div class="nombre-amigo">${a.nombre}</div>
-        <div class="estado-texto">${a.online ? 'En línea' : 'Desconectado'}</div>
+        <div class="estado-texto">${a.online ? 'En línea — clic para retar' : 'Desconectado'}</div>
       `;
+      div.addEventListener('click', () => {
+        if (!a.online) {
+          return notificar('Desconectado', `${a.nombre} no está en línea`, 'error');
+        }
+        // Retar al amigo a una partida
+        config.socket.emit('invitar-amigo', { username: config.username, amigo: a.nombre }, (r) => {
+          if (r && r.success) {
+            notificar('Reto enviado', r.mensaje, 'exito');
+            mostrarPantalla('tela-juego'); // esperar desde la pantalla del juego
+          } else {
+            notificar('Error', (r && r.error) || 'No se pudo enviar el reto', 'error');
+          }
+        });
+      });
       dom['amigos-lista'].appendChild(div);
     });
     if (res.amigos.length === 0) {
@@ -342,6 +367,42 @@ function cargarAmigos() {
     }
   });
 }
+
+// ===== RETOS DE AMIGOS (invitaciones) =====
+let invitadorPendiente = null;
+
+function mostrarInvitacion(de) {
+  invitadorPendiente = de;
+  dom['invitacion-texto'].textContent = `${de} quiere jugar contigo`;
+  dom['invitacion-overlay'].classList.remove('hidden');
+}
+
+function cerrarInvitacion() {
+  invitadorPendiente = null;
+  dom['invitacion-overlay'].classList.add('hidden');
+}
+
+dom['btn-aceptar-inv'].addEventListener('click', () => {
+  if (!invitadorPendiente) return;
+  const de = invitadorPendiente;
+  cerrarInvitacion();
+  config.socket.emit('responder-invitacion', { username: config.username, de, aceptar: true }, (res) => {
+    if (res && res.success && res.aceptado) {
+      notificar('¡A jugar!', `Aceptaste el reto de ${de}`, 'exito');
+      // 'partida-iniciada' llega del servidor y muestra el tablero
+    } else {
+      notificar('Error', (res && res.error) || 'No se pudo aceptar el reto', 'error');
+    }
+  });
+});
+
+dom['btn-rechazar-inv'].addEventListener('click', () => {
+  if (!invitadorPendiente) return;
+  const de = invitadorPendiente;
+  cerrarInvitacion();
+  config.socket.emit('responder-invitacion', { username: config.username, de, aceptar: false });
+  notificar('Reto', `Rechazaste el reto de ${de}`, 'alerta');
+});
 
 dom['btn-agregar-amigo'].addEventListener('click', () => {
   const codigoAmigo = dom['codigo-amigo-input'].value.trim();

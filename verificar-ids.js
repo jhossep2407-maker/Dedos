@@ -17,7 +17,8 @@ const idsRequeridos = [
   'modo-actual', 'mensaje-central', 'acciones-juego', 'hint-accion', 'btn-dividir',
   'resultado', 'titulo-resultado', 'descripcion-resultado', 'btn-jugar-de-nuevo',
   'solicitudes-lista', 'amigos-lista', 'btn-volver-juego',
-  'codigo-amigo-input', 'btn-agregar-amigo'
+  'codigo-amigo-input', 'btn-agregar-amigo',
+  'invitacion-overlay', 'invitacion-texto', 'btn-aceptar-inv', 'btn-rechazar-inv'
 ];
 
 let faltantes = [];

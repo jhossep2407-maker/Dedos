@@ -16,6 +16,7 @@ const users = {};          // { username: { passwordHash, exp, nivel, friends[],
 const games = {};          // { codigo: partida }
 const friendRequests = {}; // { username: [{de, estado, fecha}] }
 const onlineSockets = {};   // { username: socketId } - usuarios conectados
+const pendingInvites = {};  // { receptor: emisor } - retos pendientes
 
 const SALT_ROUNDS = 10;
 
@@ -46,14 +47,14 @@ function estadoInicialManos() {
   };
 }
 
-function nuevaPartida(p1Username, socketP1) {
+function nuevaPartida(p1Username, socketP1Id) {
   let codigo = generarCodigo();
   while (games[codigo]) codigo = generarCodigo();
   games[codigo] = {
     codigo,
     p1: p1Username,
     p2: null,
-    sockets: { p1: socketP1.id, p2: null },
+    sockets: { p1: socketP1Id, p2: null },
     estado: {
       p1: { username: p1Username, manos: estadoInicialManos() },
       p2: null
@@ -86,6 +87,17 @@ function manosVivas(manos) {
 
 function sumaDedosVivos(manos) {
   return (manos.izq.alive ? manos.izq.count : 0) + (manos.der.alive ? manos.der.count : 0);
+}
+
+// Registrar una sesión de usuario (soporta múltiples pestañas/dispositivos)
+function registrarSesion(socket, username) {
+  if (!onlineSockets[username]) onlineSockets[username] = new Set();
+  onlineSockets[username].add(socket.id);
+  socket.join(`user:${username}`); // sala personal: los eventos llegan a todas las sesiones
+}
+
+function usuarioConectado(username) {
+  return !!(onlineSockets[username] && onlineSockets[username].size > 0);
 }
 
 function finalizarPartida(partida, ganador, motivo) {
@@ -198,7 +210,7 @@ io.on('connection', (socket) => {
       };
 
       usuarioActual = username;
-      onlineSockets[username] = socket.id;
+      registrarSesion(socket, username);
       console.log(`[OK] Registrado: ${username}`);
       fn({
         success: true,
@@ -227,7 +239,7 @@ io.on('connection', (socket) => {
       if (!valido) return fn({ error: 'Contraseña incorrecta' });
 
       usuarioActual = username;
-      onlineSockets[username] = socket.id;
+      registrarSesion(socket, username);
       console.log(`[OK] Login: ${username}`);
       fn({
         success: true,
@@ -255,7 +267,7 @@ io.on('connection', (socket) => {
     }
     if (previa) delete games[previa.codigo];
 
-    const partida = nuevaPartida(username, socket);
+    const partida = nuevaPartida(username, `user:${username}`);
     console.log(`[OK] Partida creada: ${partida.codigo} por ${username}`);
     fn({ success: true, codigo: partida.codigo });
   });
@@ -272,7 +284,7 @@ io.on('connection', (socket) => {
     if (partida.p1 === username) return fn({ error: 'No puedes unirte a tu propia partida' });
 
     partida.p2 = username;
-    partida.sockets.p2 = socket.id;
+    partida.sockets.p2 = `user:${username}`;
     partida.estado.p2 = { username, manos: estadoInicialManos() };
     partida.enCurso = true;
 
@@ -387,7 +399,7 @@ io.on('connection', (socket) => {
 
     const amigos = user.friends.map(nombre => ({
       nombre,
-      online: !!onlineSockets[nombre],
+      online: usuarioConectado(nombre),
       codigo: users[nombre] ? users[nombre].codigo : '---'
     }));
 
@@ -422,10 +434,7 @@ io.on('connection', (socket) => {
     friendRequests[nombreObjetivo].push({ de: username, estado: 'pendiente', fecha: new Date() });
 
     // Notificar en tiempo real si está conectado
-    const socketObjetivo = onlineSockets[nombreObjetivo];
-    if (socketObjetivo) {
-      io.to(socketObjetivo).emit('solicitud-amistad-recibida', { de: username });
-    }
+    io.to(`user:${nombreObjetivo}`).emit('solicitud-amistad-recibida', { de: username });
 
     console.log(`[OK] Solicitud de amistad: ${username} -> ${nombreObjetivo}`);
     fn({ success: true, mensaje: `Solicitud enviada a ${nombreObjetivo}` });
@@ -447,16 +456,91 @@ io.on('connection', (socket) => {
     if (users[de] && !users[de].friends.includes(username)) users[de].friends.push(username);
 
     // Notificar a ambos
-    const socketDe = onlineSockets[de];
-    if (socketDe) io.to(socketDe).emit('amistad-aceptada', { de: username });
+    io.to(`user:${de}`).emit('amistad-aceptada', { de: username });
     fn({ success: true, mensaje: `¡Ahora son amigos ${username} y ${de}!` });
+  });
+
+  // ---------- AMIGOS: RETAR A PARTIDA ----------
+  socket.on('invitar-amigo', (data, callback) => {
+    const fn = typeof callback === 'function' ? callback : () => {};
+    const { username, amigo } = data || {};
+    if (!username || !users[username]) return fn({ error: 'Debes iniciar sesión' });
+    if (!amigo || !users[amigo]) return fn({ error: 'Ese usuario no existe' });
+    if (!users[username].friends.includes(amigo)) return fn({ error: 'Ese usuario no es tu amigo' });
+    if (amigo === username) return fn({ error: 'No puedes retarte a ti mismo' });
+    if (!usuarioConectado(amigo)) return fn({ error: `${amigo} no está conectado` });
+
+    // Nadie en partida en curso
+    const ocupado = Object.values(games).find(
+      g => g.enCurso && (g.p1 === username || g.p2 === username || g.p1 === amigo || g.p2 === amigo)
+    );
+    if (ocupado) return fn({ error: 'Alguno de los dos ya está en una partida' });
+
+    // Limpiar partida en espera del invitador (ya no la necesita)
+    const enEspera = Object.values(games).find(g => !g.enCurso && g.p1 === username);
+    if (enEspera) delete games[enEspera.codigo];
+
+    pendingInvites[amigo] = username;
+    io.to(`user:${amigo}`).emit('invitacion-recibida', { de: username });
+    console.log(`[OK] Reto: ${username} -> ${amigo}`);
+    fn({ success: true, mensaje: `Reto enviado a ${amigo}. Esperando respuesta...` });
+  });
+
+  // ---------- AMIGOS: RESPONDER RETO ----------
+  socket.on('responder-invitacion', (data, callback) => {
+    const fn = typeof callback === 'function' ? callback : () => {};
+    const { username, de, aceptar } = data || {};
+    if (!username || !users[username]) return fn({ error: 'Debes iniciar sesión' });
+
+    // Solo se puede responder a un reto real y pendiente
+    if (pendingInvites[username] !== de) {
+      return fn({ error: 'No tienes un reto pendiente de ese usuario' });
+    }
+    delete pendingInvites[username];
+
+    if (!aceptar) {
+      io.to(`user:${de}`).emit('invitacion-rechazada', { de: username });
+      console.log(`[..] Reto rechazado: ${username} rechazó a ${de}`);
+      return fn({ success: true, aceptado: false });
+    }
+
+    // Aceptado: el invitador debe seguir conectado (en alguna sesión)
+    if (!usuarioConectado(de)) return fn({ error: `${de} ya no está conectado` });
+
+    // Nadie en partida en curso
+    const ocupado = Object.values(games).find(
+      g => g.enCurso && (g.p1 === de || g.p2 === de || g.p1 === username || g.p2 === username)
+    );
+    if (ocupado) return fn({ error: 'Alguno de los dos ya está en una partida' });
+
+    // Crear la partida privada directamente (las salas personales llegan a todas las sesiones)
+    const partida = nuevaPartida(de, `user:${de}`);
+    partida.p2 = username;
+    partida.sockets.p2 = `user:${username}`;
+    partida.estado.p2 = { username, manos: estadoInicialManos() };
+    partida.enCurso = true;
+    partida.turnoActual = Math.random() < 0.5 ? de : username;
+
+    console.log(`[OK] Partida por reto ${partida.codigo}: ${de} vs ${username}. Empieza ${partida.turnoActual}`);
+    emitirAPartida(partida, 'partida-iniciada', {
+      partida: vistaPublicaPartida(partida),
+      mensaje: `¡${username} aceptó el reto! Empieza ${partida.turnoActual}`
+    });
+
+    fn({ success: true, aceptado: true, codigo: partida.codigo });
   });
 
   // ---------- DESCONEXIÓN ----------
   socket.on('disconnect', () => {
     console.log(`[-] Desconexion: ${socket.id}`);
     if (usuarioActual) {
-      delete onlineSockets[usuarioActual];
+      // Multi-sesión: quitar solo ESTA sesión; limpiar solo si era la última
+      const sesiones = onlineSockets[usuarioActual];
+      if (sesiones) {
+        sesiones.delete(socket.id);
+        if (sesiones.size > 0) return; // el usuario sigue conectado en otra pestaña/dispositivo
+        delete onlineSockets[usuarioActual];
+      }
 
       // Si estaba en partida, el oponente gana
       const partida = Object.values(games).find(
@@ -472,6 +556,12 @@ io.on('connection', (socket) => {
         g => !g.enCurso && g.p1 === usuarioActual
       );
       if (huerfana) delete games[huerfana.codigo];
+
+      // Limpiar retos pendientes relacionados con este usuario
+      if (pendingInvites[usuarioActual]) delete pendingInvites[usuarioActual];
+      Object.keys(pendingInvites).forEach(receptor => {
+        if (pendingInvites[receptor] === usuarioActual) delete pendingInvites[receptor];
+      });
     }
   });
 });
