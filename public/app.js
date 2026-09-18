@@ -38,6 +38,21 @@ function initDom() {
 initDom();
 inicializarSocket();
 
+// ===== AUTO-LOGIN: restaurar sesión guardada (si existe) =====
+(function restaurarSesion() {
+  const tokenGuardado = localStorage.getItem('deditos_token');
+  if (!tokenGuardado) return; // sin sesión guardada: mostrar login normal
+
+  config.socket.emit('verificar-sesion', { token: tokenGuardado }, (res) => {
+    if (res && res.success) {
+      entrarAlJuego(res, true); // entra directo al juego, sin pedir datos
+    } else {
+      // Token inválido o expirado: limpiarlo y quedarse en el login
+      localStorage.removeItem('deditos_token');
+    }
+  });
+})();
+
 // ===== SOCKET =====
 function inicializarSocket() {
   config.socket = io();
@@ -140,7 +155,9 @@ dom['mostrar-login'].addEventListener('click', () => {
   dom['panel-login'].classList.remove('hidden');
 });
 
-function entrarAlJuego(res) {
+function entrarAlJuego(res, esRestauracion) {
+  // Guardar token de sesión (persiste entre recargas del navegador)
+  if (res.token) localStorage.setItem('deditos_token', res.token);
   config.username = res.usuario;
   config.miCodigo = res.codigo;
   dom['username-display'].textContent = res.usuario;
@@ -149,7 +166,11 @@ function entrarAlJuego(res) {
   dom['mi-codigo-amigo'].textContent = res.codigo;
   dom['estado-partida'].textContent = 'Crea una partida o únete con un código';
   mostrarPantalla('tela-juego');
-  notificar('Bienvenido', `¡Hola ${res.usuario}!`, 'exito');
+  if (esRestauracion) {
+    notificar('Sesión restaurada', `¡Hola de nuevo, ${res.usuario}!`, 'exito');
+  } else {
+    notificar('Bienvenido', `¡Hola ${res.usuario}!`, 'exito');
+  }
 }
 
 // ===== PARTIDAS =====
@@ -425,8 +446,14 @@ dom['btn-copiar-codigo-amigo'].addEventListener('click', () => {
 });
 
 // ===== SALIR =====
+// ===== SALIR (cerrar sesión de verdad: borra el token) =====
 dom['btn-salir'].addEventListener('click', () => {
-  location.reload();
+  const token = localStorage.getItem('deditos_token');
+  if (token) {
+    config.socket.emit('cerrar-sesion', { token });
+  }
+  localStorage.removeItem('deditos_token');
+  location.reload(); // al recargar ya no hay token -> aparece el login
 });
 
 // ===== NOTIFICACIONES =====

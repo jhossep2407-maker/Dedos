@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const bcrypt = require('bcrypt');
+const crypto = require('crypto');
 const path = require('path');
 
 const app = express();
@@ -15,10 +16,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 const users = {};          // { username: { passwordHash, exp, nivel, friends[], codigo } }
 const games = {};          // { codigo: partida }
 const friendRequests = {}; // { username: [{de, estado, fecha}] }
-const onlineSockets = {};   // { username: socketId } - usuarios conectados
+const onlineSockets = {};   // { username: Set<socketId> } - sesiones conectadas
 const pendingInvites = {};  // { receptor: emisor } - retos pendientes
+const sessions = {};        // { token: { username, creado } } - sesiones persistentes
 
 const SALT_ROUNDS = 10;
+const EXPIRACION_SESION = 30 * 24 * 60 * 60 * 1000; // 30 días
 
 // ===== FUNCIONES AUXILIARES =====
 
@@ -98,6 +101,56 @@ function registrarSesion(socket, username) {
 
 function usuarioConectado(username) {
   return !!(onlineSockets[username] && onlineSockets[username].size > 0);
+}
+
+// ===== SESIONES PERSISTENTES (token) =====
+
+function crearSesion(username) {
+  const token = crypto.randomBytes(32).toString('hex');
+  sessions[token] = { username, creado: Date.now() };
+  return token;
+}
+
+// Devuelve la sesión si el token existe y no expiró; si no, null
+function validarSesion(token) {
+  const s = sessions[token];
+  if (!s) return null;
+  if (Date.now() - s.creado > EXPIRACION_SESION) {
+    delete sessions[token];
+    return null;
+  }
+  return s;
+}
+
+// Salida de un usuario desde un socket (desconexión o cierre de sesión).
+// Si le quedan otras sesiones activas, el usuario sigue en línea.
+function manejarSalida(socket, username) {
+  socket.leave(`user:${username}`);
+  const sesiones = onlineSockets[username];
+  if (sesiones) {
+    sesiones.delete(socket.id);
+    if (sesiones.size > 0) return; // sigue activo en otra pestaña/dispositivo
+    delete onlineSockets[username];
+  }
+
+  // Si estaba en partida, el oponente gana
+  const partida = Object.values(games).find(
+    g => g.enCurso && (g.p1 === username || g.p2 === username)
+  );
+  if (partida) {
+    const ganador = partida.p1 === username ? partida.p2 : partida.p1;
+    finalizarPartida(partida, ganador, `${username} salió de la partida`);
+  }
+
+  // Si esperaba oponente, eliminar su partida huérfana
+  const huerfana = Object.values(games).find(g => !g.enCurso && g.p1 === username);
+  if (huerfana) delete games[huerfana.codigo];
+
+  // Limpiar retos pendientes relacionados con este usuario
+  if (pendingInvites[username]) delete pendingInvites[username];
+  Object.keys(pendingInvites).forEach(receptor => {
+    if (pendingInvites[receptor] === username) delete pendingInvites[receptor];
+  });
 }
 
 function finalizarPartida(partida, ganador, motivo) {
@@ -225,13 +278,15 @@ io.on('connection', (socket) => {
 
       usuarioActual = username;
       registrarSesion(socket, username);
+      const token = crearSesion(username);
       console.log(`[OK] Registrado: ${username}`);
       fn({
         success: true,
         usuario: username,
         nivel: 1,
         exp: 0,
-        codigo
+        codigo,
+        token
       });
     } catch (err) {
       console.error('[ERR] registrar:', err.message);
@@ -254,18 +309,61 @@ io.on('connection', (socket) => {
 
       usuarioActual = username;
       registrarSesion(socket, username);
+      const token = crearSesion(username);
       console.log(`[OK] Login: ${username}`);
       fn({
         success: true,
         usuario: username,
         nivel: user.nivel,
         exp: user.exp,
-        codigo: user.codigo
+        codigo: user.codigo,
+        token
       });
     } catch (err) {
       console.error('[ERR] login:', err.message);
       if (typeof callback === 'function') callback({ error: 'Error interno del servidor' });
     }
+  });
+
+  // ---------- VERIFICAR SESIÓN (auto-login con token) ----------
+  socket.on('verificar-sesion', (data, callback) => {
+    const fn = typeof callback === 'function' ? callback : () => {};
+    const { token } = data || {};
+    const sesion = token ? validarSesion(token) : null;
+    if (!sesion) return fn({ error: 'Sesión no válida o expirada' });
+
+    const username = sesion.username;
+    const user = users[username];
+    if (!user) return fn({ error: 'El usuario de esta sesión ya no existe' });
+
+    usuarioActual = username;
+    registrarSesion(socket, username);
+    console.log(`[OK] Sesión restaurada: ${username}`);
+    fn({
+      success: true,
+      usuario: username,
+      nivel: user.nivel,
+      exp: user.exp,
+      codigo: user.codigo
+    });
+  });
+
+  // ---------- CERRAR SESIÓN ----------
+  socket.on('cerrar-sesion', (data, callback) => {
+    const fn = typeof callback === 'function' ? callback : () => {};
+    const { token } = data || {};
+
+    if (token && sessions[token]) {
+      const usernameSesion = sessions[token].username;
+      delete sessions[token];
+
+      // Si ESTE socket era ese usuario, desregistrar su presencia
+      if (usuarioActual && usuarioActual === usernameSesion) {
+        manejarSalida(socket, usuarioActual);
+        usuarioActual = null;
+      }
+    }
+    fn({ success: true });
   });
 
   // ---------- CREAR PARTIDA ----------
@@ -536,34 +634,8 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log(`[-] Desconexion: ${socket.id}`);
     if (usuarioActual) {
-      // Multi-sesión: quitar solo ESTA sesión; limpiar solo si era la última
-      const sesiones = onlineSockets[usuarioActual];
-      if (sesiones) {
-        sesiones.delete(socket.id);
-        if (sesiones.size > 0) return; // el usuario sigue conectado en otra pestaña/dispositivo
-        delete onlineSockets[usuarioActual];
-      }
-
-      // Si estaba en partida, el oponente gana
-      const partida = Object.values(games).find(
-        g => g.enCurso && (g.p1 === usuarioActual || g.p2 === usuarioActual)
-      );
-      if (partida) {
-        const ganador = partida.p1 === usuarioActual ? partida.p2 : partida.p1;
-        finalizarPartida(partida, ganador, `${usuarioActual} se desconectó`);
-      }
-
-      // Si esperaba oponente, eliminar su partida huérfana
-      const huerfana = Object.values(games).find(
-        g => !g.enCurso && g.p1 === usuarioActual
-      );
-      if (huerfana) delete games[huerfana.codigo];
-
-      // Limpiar retos pendientes relacionados con este usuario
-      if (pendingInvites[usuarioActual]) delete pendingInvites[usuarioActual];
-      Object.keys(pendingInvites).forEach(receptor => {
-        if (pendingInvites[receptor] === usuarioActual) delete pendingInvites[receptor];
-      });
+      manejarSalida(socket, usuarioActual);
+      usuarioActual = null;
     }
   });
 });

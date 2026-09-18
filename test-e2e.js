@@ -120,11 +120,14 @@ async function main() {
   server.stderr.on('data', d => process.stdout.write(`[SRV-ERR] ${d}`));
   await esperar(2000);
 
-  // 2. Abrir navegador con 2 páginas
+  // 2. Abrir navegador con 3 "dispositivos" aislados (contextos con localStorage independiente)
   console.log('\n=== ABRIENDO NAVEGADOR (2 jugadores) ===');
   const browser = await puppeteer.launch({ headless: 'shell', args: ['--no-sandbox'] });
-  const pag1 = await browser.newPage();
-  const pag2 = await browser.newPage();
+  const crearContexto = async () => browser.createBrowserContext();
+  const ctx1 = await crearContexto();
+  const ctx2 = await crearContexto();
+  const pag1 = await ctx1.newPage();
+  const pag2 = await ctx2.newPage();
   await pag1.setViewport({ width: 800, height: 900 });
   await pag2.setViewport({ width: 800, height: 900 });
 
@@ -224,8 +227,11 @@ async function main() {
 
   // TEST 7: Login de usuario ya registrado (persistencia)
   console.log('\n=== TEST 7: Login de usuario ya registrado ===');
-  const pag3 = await browser.newPage();
+  const ctx3 = await crearContexto();
+  const pag3 = await ctx3.newPage();
+  await pag3.setViewport({ width: 800, height: 900 });
   pag3.on('pageerror', e => erroresConsola.pag1.push('PAG3: ' + e.message));
+  pag3.on('console', m => { if (m.type() === 'error') erroresConsola.pag1.push('PAG3: ' + m.text()); });
   await pag3.goto(URL, { waitUntil: 'networkidle0' });
   await pag3.type('#username', NOMBRE1);
   await pag3.type('#password', 'pass1234');
@@ -235,10 +241,34 @@ async function main() {
   const expTrasLogin = await pag3.$eval('#exp-display', el => el.textContent);
   const expEsperada = gano1 ? '100' : '5';
   check(`EXP persiste tras login (esperado ${expEsperada}): "${expTrasLogin}"`, expTrasLogin.includes(expEsperada));
+
+  // TEST 8: Persistencia de sesión (auto-login con token)
+  console.log('\n=== TEST 8: Persistencia de sesión (recargar no pide login) ===');
+  // pag3 acaba de iniciar sesión: tiene el token en localStorage
+  const tokenGuardado = await pag3.evaluate(() => localStorage.getItem('deditos_token'));
+  check('Token guardado en localStorage tras login', tokenGuardado !== null && tokenGuardado.length > 20);
+
+  // Recargar la página: debe entrar DIRECTO al juego (auto-login)
+  await pag3.reload({ waitUntil: 'networkidle0' });
+  await esperar(1200);
+  check('Tras recargar, entra al juego SIN pedir login', await pag3.$eval('#tela-juego', el => !el.classList.contains('hidden')));
+  check('Usuario restaurado correctamente', (await pag3.$eval('#username-display', el => el.textContent)) === NOMBRE1);
+  check('Login oculto tras restauración', await pag3.$eval('#tela-login', el => el.classList.contains('hidden')));
+
+  // Cerrar sesión con el botón Salir
+  await pag3.click('#btn-salir');
+  await esperar(1500); // recarga tras el logout
+  check('Tras "Salir", muestra el login', await pag3.$eval('#tela-login', el => !el.classList.contains('hidden')));
+  check('Token eliminado tras cerrar sesión', await pag3.evaluate(() => localStorage.getItem('deditos_token') === null));
+
+  // Recargar SIN token: debe permanecer en el login
+  await pag3.reload({ waitUntil: 'networkidle0' });
+  await esperar(1000);
+  check('Recargando sin sesión, permanece en login', await pag3.$eval('#tela-login', el => !el.classList.contains('hidden')));
   await pag3.close();
 
-  // TEST 8: Amistad por código + RETO entre amigos
-  console.log('\n=== TEST 8: Amistad por código y reto directo ===');
+  // TEST 9: Amistad por código + RETO entre amigos
+  console.log('\n=== TEST 9: Amistad por código y reto directo ===');
 
   // Volver al menú ambos
   await pag1.click('#btn-jugar-de-nuevo');
@@ -317,8 +347,8 @@ async function main() {
   check('Tablero visible en pag2 tras aceptar reto', tablero2);
   check('Nombres en tablero pag1', (await pag1.$eval('#nombre-p1', el => el.textContent)) === NOMBRE1);
 
-  // TEST 9: Partida 2 completa (por reto)
-  console.log('\n=== TEST 9: Partida 2 completa (por reto) ===');
+  // TEST 10: Partida 2 completa (por reto)
+  console.log('\n=== TEST 10: Partida 2 completa (por reto) ===');
   const juego2 = await jugarHastaTerminar(pag1, pag2);
   const jugadas2 = juego2.jugadas;
   console.log(`  Divisiones realizadas: ${juego2.divisiones}`);
@@ -337,8 +367,8 @@ async function main() {
   const gano2b = res2b.titulo.includes('GANASTE');
   check('Exactamente un ganador en reto', gano1b !== gano2b);
 
-  // TEST 10: Errores de consola en TODA la sesión
-  console.log('\n=== TEST 10: Errores de consola en TODA la sesión ===');
+  // TEST 11: Errores de consola en TODA la sesión
+  console.log('\n=== TEST 11: Errores de consola en TODA la sesión ===');
   const totalErrores = erroresConsola.pag1.length + erroresConsola.pag2.length;
   console.log(`  Errores pag1: ${erroresConsola.pag1.length}, pag2: ${erroresConsola.pag2.length}`);
   erroresConsola.pag1.forEach(e => console.log(`    PAG1: ${e}`));

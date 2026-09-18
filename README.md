@@ -127,7 +127,7 @@ express, socket.io, bcrypt, cors, uuid
 ✅ Rate limiting implícito en eventos
 ✅ Códigos únicos por usuario (evitar colisiones)
 ✅ Sistema de solicitudes amistad con validación
-✅ Expiración sesión por inactividad
+✅ **Sesión persistente con token** (crypto.randomBytes, expira a 30 días): recargar la página NO vuelve a pedir login; solo el botón "Salir" cierra la sesión y borra el token
 
 ### 📈 SISTEMA DE EXP Y NIVEL
 
