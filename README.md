@@ -128,6 +128,7 @@ express, socket.io, bcrypt, cors, uuid
 ✅ Códigos únicos por usuario (evitar colisiones)
 ✅ Sistema de solicitudes amistad con validación
 ✅ **Sesión persistente con token** (crypto.randomBytes, expira a 30 días): recargar la página NO vuelve a pedir login; solo el botón "Salir" cierra la sesión y borra el token
+✅ **Persistencia real con PostgreSQL (Neon, gratis)**: cuentas, contraseñas, EXP, niveles, amigos, solicitudes y sesiones sobreviven reinicios del servidor. La URL de conexión vive SOLO en la variable de entorno `DATABASE_URL` (nunca en el código ni en GitHub). Sin `DATABASE_URL` el servidor funciona igual en memoria (modo desarrollo/pruebas)
 
 ### 📈 SISTEMA DE EXP Y NIVEL
 

@@ -5,8 +5,11 @@ const { spawn } = require('child_process');
 
 const PUERTO = 3001;
 const URL = `http://localhost:${PUERTO}`;
-const NOMBRE1 = 'jugadoruno';
-const NOMBRE2 = 'jugadordos';
+// Con DATABASE_URL (PostgreSQL): sufijo único por corrida para no chocar con usuarios previos
+const USA_DB = !!process.env.DATABASE_URL;
+const SUFIJO = USA_DB ? '_' + Date.now().toString(36).slice(-6) : '';
+const NOMBRE1 = 'jugadoruno' + SUFIJO;
+const NOMBRE2 = 'jugadordos' + SUFIJO;
 
 let erroresConsola = { pag1: [], pag2: [] };
 let fallos = 0;
@@ -118,7 +121,32 @@ async function main() {
   const server = spawn('node', ['server.js'], { cwd: __dirname, stdio: 'pipe' });
   server.stdout.on('data', d => process.stdout.write(`[SRV] ${d}`));
   server.stderr.on('data', d => process.stdout.write(`[SRV-ERR] ${d}`));
-  await esperar(2000);
+
+  // Esperar a que responda (con PostgreSQL la BD puede tardar en despertar)
+  let servidorListo = false;
+  for (let i = 0; i < 40; i++) {
+    try {
+      const res = await fetch(`http://localhost:${PUERTO}/api/health`);
+      if (res.ok) { servidorListo = true; break; }
+    } catch { /* aun no listo */ }
+    await esperar(500);
+  }
+  if (!servidorListo) {
+    console.log('ERROR FATAL: el servidor no respondió');
+    server.kill();
+    process.exit(1);
+  }
+  console.log(USA_DB ? '(modo PostgreSQL real)' : '(modo memoria)');
+
+  // En modo PostgreSQL: limpiar usuarios de pruebas anteriores (higiene de la BD)
+  if (USA_DB) {
+    const crearDb = require('./db');
+    const dbLimpieza = crearDb(process.env.DATABASE_URL);
+    await dbLimpieza.init();
+    await dbLimpieza.borrarUsuariosTest('jugadoruno');
+    await dbLimpieza.borrarUsuariosTest('jugadordos');
+    console.log('(BD: usuarios de pruebas anteriores eliminados)');
+  }
 
   // 2. Abrir navegador con 3 "dispositivos" aislados (contextos con localStorage independiente)
   console.log('\n=== ABRIENDO NAVEGADOR (2 jugadores) ===');
@@ -166,7 +194,10 @@ async function main() {
   await pag1.type('#username-reg', NOMBRE1);
   await pag1.type('#password-reg', 'pass1234');
   await pag1.click('#form-registrar button[type=submit]');
-  await esperar(1000);
+  await pag1.waitForFunction(
+    () => !document.getElementById('tela-juego').classList.contains('hidden'),
+    { timeout: 15000 }
+  );
   check('Pantalla juego visible tras registro', await pag1.$eval('#tela-juego', el => !el.classList.contains('hidden')));
   const user1 = await pag1.$eval('#username-display', el => el.textContent);
   check(`Username mostrado: "${user1}"`, user1 === NOMBRE1);
@@ -179,7 +210,10 @@ async function main() {
   await pag2.type('#username-reg', NOMBRE2);
   await pag2.type('#password-reg', 'pass1234');
   await pag2.click('#form-registrar button[type=submit]');
-  await esperar(1000);
+  await pag2.waitForFunction(
+    () => !document.getElementById('tela-juego').classList.contains('hidden'),
+    { timeout: 15000 }
+  );
   check('Pantalla juego visible pag2', await pag2.$eval('#tela-juego', el => !el.classList.contains('hidden')));
 
   // TEST 4: Crear partida por código
@@ -197,7 +231,15 @@ async function main() {
   console.log('\n=== TEST 5: Unirse a partida (jugador 2) ===');
   estadoDialogos.codigo = codigoPartida;
   await pag2.click('#btn-unirse-partida');
-  await esperar(1000);
+  await pag1.waitForFunction(
+    () => !document.getElementById('tablero-juego').classList.contains('hidden'),
+    { timeout: 10000 }
+  ).catch(() => {});
+  await pag2.waitForFunction(
+    () => !document.getElementById('tablero-juego').classList.contains('hidden'),
+    { timeout: 10000 }
+  );
+  await esperar(300);
   check('Tablero visible pag1', await pag1.$eval('#tablero-juego', el => !el.classList.contains('hidden')));
   check('Tablero visible pag2', await pag2.$eval('#tablero-juego', el => !el.classList.contains('hidden')));
   check('Nombres mostrados pag1', (await pag1.$eval('#nombre-p1', el => el.textContent)) === NOMBRE1);
@@ -236,7 +278,10 @@ async function main() {
   await pag3.type('#username', NOMBRE1);
   await pag3.type('#password', 'pass1234');
   await pag3.click('#form-login button[type=submit]');
-  await esperar(800);
+  await pag3.waitForFunction(
+    () => !document.getElementById('tela-juego').classList.contains('hidden'),
+    { timeout: 15000 }
+  );
   check('Login correcto con usuario registrado', await pag3.$eval('#tela-juego', el => !el.classList.contains('hidden')));
   const expTrasLogin = await pag3.$eval('#exp-display', el => el.textContent);
   const expEsperada = gano1 ? '100' : '5';
@@ -250,14 +295,20 @@ async function main() {
 
   // Recargar la página: debe entrar DIRECTO al juego (auto-login)
   await pag3.reload({ waitUntil: 'networkidle0' });
-  await esperar(1200);
+  await pag3.waitForFunction(
+    () => !document.getElementById('tela-juego').classList.contains('hidden'),
+    { timeout: 15000 }
+  );
   check('Tras recargar, entra al juego SIN pedir login', await pag3.$eval('#tela-juego', el => !el.classList.contains('hidden')));
   check('Usuario restaurado correctamente', (await pag3.$eval('#username-display', el => el.textContent)) === NOMBRE1);
   check('Login oculto tras restauración', await pag3.$eval('#tela-login', el => el.classList.contains('hidden')));
 
   // Cerrar sesión con el botón Salir
   await pag3.click('#btn-salir');
-  await esperar(1500); // recarga tras el logout
+  await pag3.waitForFunction(
+    () => !document.getElementById('tela-login').classList.contains('hidden'),
+    { timeout: 15000 }
+  );
   check('Tras "Salir", muestra el login', await pag3.$eval('#tela-login', el => !el.classList.contains('hidden')));
   check('Token eliminado tras cerrar sesión', await pag3.evaluate(() => localStorage.getItem('deditos_token') === null));
 
@@ -289,12 +340,20 @@ async function main() {
 
   // jugador 2 acepta la solicitud
   await pag2.click('#btn-amigos');
-  await esperar(600);
-  const haySolicitud = await pag2.$eval('#solicitudes-lista .solicitud-item', el => !!el).catch(() => false);
+  const haySolicitud = await pag2.waitForFunction(
+    () => !!document.querySelector('#solicitudes-lista .solicitud-item'),
+    { timeout: 15000 }
+  ).then(() => true).catch(() => false);
   check('Solicitud visible en jugador 2', haySolicitud);
   await pag2.click('#solicitudes-lista .solicitud-item .btn-mini');
-  await esperar(800);
-  check('Solicitud aceptada', true);
+
+  // Esperar a que la amistad quede registrada: pag2 re-renderiza su lista
+  // con el amigo tras la respuesta del servidor (latencia de BD cubierta)
+  const amistadConfirmada = await pag2.waitForFunction(
+    () => !!document.querySelector('#amigos-lista .amigo-item'),
+    { timeout: 20000 }
+  ).then(() => true).catch(() => false);
+  check('Solicitud aceptada (amistad creada)', amistadConfirmada);
 
   // jugador 2 vuelve al juego
   await pag2.click('#btn-volver-juego');
@@ -302,10 +361,13 @@ async function main() {
   // jugador 1 recarga su lista de amigos (volver y reentrar)
   await pag1.click('#btn-volver-juego');
   await pag1.click('#btn-amigos');
-  await esperar(600);
+  const amigoEnPag1 = await pag1.waitForFunction(
+    () => !!document.querySelector('#amigos-lista .amigo-item'),
+    { timeout: 15000 }
+  ).then(() => true).catch(() => false);
 
   // El amigo debe aparecer conectado (círculo verde) y retador
-  const infoAmigo = await pag1.evaluate(() => {
+  const infoAmigo = amigoEnPag1 ? await pag1.evaluate(() => {
     const item = document.querySelector('#amigos-lista .amigo-item');
     if (!item) return { existe: false };
     return {
@@ -313,7 +375,7 @@ async function main() {
       retador: item.classList.contains('retador'),
       texto: item.textContent
     };
-  });
+  }) : { existe: false, retador: false, texto: 'undefined' };
   check(`Amigo "${NOMBRE2}" aparece en la lista`, infoAmigo.existe);
   check('Amigo conectado y retador (clic para retar)', infoAmigo.retador);
   console.log(`  Texto del amigo: ${infoAmigo.texto}`);
@@ -325,7 +387,7 @@ async function main() {
   // jugador 2 debe recibir la invitación con Aceptar/Rechazar
   const overlayOk = await pag2.waitForFunction(
     () => !document.getElementById('invitacion-overlay').classList.contains('hidden'),
-    { timeout: 5000 }
+    { timeout: 10000 }
   ).then(() => true).catch(() => false);
   check('Invitación recibida por el amigo', overlayOk);
   const textoInv = await pag2.$eval('#invitacion-texto', el => el.textContent);
@@ -381,7 +443,10 @@ async function main() {
   await pag1.click('#btn-jugar-de-nuevo');
   await esperar(300);
   await pag1.click('#btn-ranking');
-  await esperar(700);
+  await pag1.waitForFunction(
+    () => document.querySelectorAll('#tabla-ranking .fila-ranking:not(.cabecera)').length > 0,
+    { timeout: 15000 }
+  );
   check('Pantalla ranking visible', await pag1.$eval('#tela-ranking', el => !el.classList.contains('hidden')));
 
   const ranking1 = await pag1.evaluate(() => {
@@ -396,7 +461,9 @@ async function main() {
     return { filas, miPuesto: document.getElementById('mi-puesto').textContent };
   });
 
-  check('Ambos usuarios aparecen en el ranking', ranking1.filas.length === 2, ranking1.filas);
+  const estanAmbos = ranking1.filas.some(f => f.username === NOMBRE1) &&
+                     ranking1.filas.some(f => f.username === NOMBRE2);
+  check('Ambos usuarios aparecen en el ranking', estanAmbos, ranking1.filas);
   const [primero, segundo] = ranking1.filas;
   // Orden esperado por EXP (o alfabético en empate)
   const esperadoPrimero = num1 > num2 ? NOMBRE1 : (num2 > num1 ? NOMBRE2 : (NOMBRE1 < NOMBRE2 ? NOMBRE1 : NOMBRE2));
@@ -412,7 +479,10 @@ async function main() {
   await pag2.click('#btn-jugar-de-nuevo');
   await esperar(300);
   await pag2.click('#btn-ranking');
-  await esperar(700);
+  await pag2.waitForFunction(
+    () => document.querySelectorAll('#tabla-ranking .fila-ranking:not(.cabecera)').length > 0,
+    { timeout: 15000 }
+  );
   const ranking2 = await pag2.evaluate(() => ({
     filas: Array.from(document.querySelectorAll('#tabla-ranking .fila-ranking:not(.cabecera)')).map(f => ({
       puesto: f.dataset.puesto,
@@ -444,6 +514,20 @@ async function main() {
     console.log('TODOS LOS TESTS PASARON. CERO ERRORES.');
   } else {
     console.log(`FALLOS: ${fallos}`);
+  }
+
+  // En modo PostgreSQL: limpiar los usuarios de prueba de esta corrida
+  if (USA_DB) {
+    try {
+      const crearDb = require('./db');
+      const dbLimpieza = crearDb(process.env.DATABASE_URL);
+      await dbLimpieza.init();
+      await dbLimpieza.borrarUsuariosTest('jugadoruno');
+      await dbLimpieza.borrarUsuariosTest('jugadordos');
+      console.log('(BD: usuarios de prueba eliminados — la base queda limpia)');
+    } catch (e) {
+      console.log('(AVISO) No se pudo limpiar la BD:', e.message);
+    }
   }
 
   await browser.close();

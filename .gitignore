@@ -1,6 +1,9 @@
 # Dependencias (Render las instala con npm install)
 node_modules/
 
+# Secretos y conexiones (NUNCA subir a GitHub)
+.env
+
 # Archivos de debug/prueba temporal
 *.log
 *.png

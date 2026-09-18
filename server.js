@@ -2,8 +2,8 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const bcrypt = require('bcrypt');
-const crypto = require('crypto');
 const path = require('path');
+const db = require('./db')(process.env.DATABASE_URL);
 
 const app = express();
 const server = http.createServer(app);
@@ -12,16 +12,14 @@ const io = new Server(server);
 // Servir archivos estaticos del frontend
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ===== BASE DE DATOS EN MEMORIA =====
-const users = {};          // { username: { passwordHash, exp, nivel, friends[], codigo } }
+// ===== ESTADO DEL SERVIDOR =====
+// Persistente (PostgreSQL vía db.js): usuarios, solicitudes, sesiones
+// Efímero (memoria, por naturaleza): partidas activas, retos, presencia online
 const games = {};          // { codigo: partida }
-const friendRequests = {}; // { username: [{de, estado, fecha}] }
 const onlineSockets = {};   // { username: Set<socketId> } - sesiones conectadas
 const pendingInvites = {};  // { receptor: emisor } - retos pendientes
-const sessions = {};        // { token: { username, creado } } - sesiones persistentes
 
 const SALT_ROUNDS = 10;
-const EXPIRACION_SESION = 30 * 24 * 60 * 60 * 1000; // 30 días
 
 // ===== FUNCIONES AUXILIARES =====
 
@@ -103,24 +101,7 @@ function usuarioConectado(username) {
   return !!(onlineSockets[username] && onlineSockets[username].size > 0);
 }
 
-// ===== SESIONES PERSISTENTES (token) =====
-
-function crearSesion(username) {
-  const token = crypto.randomBytes(32).toString('hex');
-  sessions[token] = { username, creado: Date.now() };
-  return token;
-}
-
-// Devuelve la sesión si el token existe y no expiró; si no, null
-function validarSesion(token) {
-  const s = sessions[token];
-  if (!s) return null;
-  if (Date.now() - s.creado > EXPIRACION_SESION) {
-    delete sessions[token];
-    return null;
-  }
-  return s;
-}
+// (Las sesiones con token ahora viven en la capa de datos db.js)
 
 // Salida de un usuario desde un socket (desconexión o cierre de sesión).
 // Si le quedan otras sesiones activas, el usuario sigue en línea.
@@ -179,33 +160,51 @@ function construirRanking(usersObj, username, limite = 25) {
   return { top, miPuesto, yo };
 }
 
-function finalizarPartida(partida, ganador, motivo) {
-  const perdedor = ganador === partida.p1 ? partida.p2 : partida.p1;
-  partida.enCurso = false;
+// Asíncrona: actualiza el EXP en la capa de datos antes de notificar a los jugadores.
+// Nunca lanza excepciones (los llamadores no necesitan await).
+async function finalizarPartida(partida, ganador, motivo) {
+  try {
+    const perdedor = ganador === partida.p1 ? partida.p2 : partida.p1;
+    partida.enCurso = false;
+    delete games[partida.codigo]; // eliminar de inmediato: no se aceptan más jugadas
 
-  const EXP_GANADOR = 100;
-  const EXP_PERDEDOR = 5;
+    const EXP_GANADOR = 100;
+    const EXP_PERDEDOR = 5;
 
-  if (users[ganador]) {
-    users[ganador].exp += EXP_GANADOR;
-    users[ganador].nivel = calcularNivel(users[ganador].exp);
+    let perfilGanador = null;
+    let perfilPerdedor = null;
+
+    try {
+      const ug = await db.getUser(ganador);
+      if (ug) {
+        const nuevoExp = ug.exp + EXP_GANADOR;
+        const nuevoNivel = calcularNivel(nuevoExp);
+        await db.updateUser(ganador, { exp: nuevoExp, nivel: nuevoNivel });
+        perfilGanador = { exp: nuevoExp, nivel: nuevoNivel };
+      }
+      const up = await db.getUser(perdedor);
+      if (up) {
+        const nuevoExp = up.exp + EXP_PERDEDOR;
+        const nuevoNivel = calcularNivel(nuevoExp);
+        await db.updateUser(perdedor, { exp: nuevoExp, nivel: nuevoNivel });
+        perfilPerdedor = { exp: nuevoExp, nivel: nuevoNivel };
+      }
+    } catch (err) {
+      console.error('[ERR] actualizando EXP en la base de datos:', err.message);
+    }
+
+    emitirAPartida(partida, 'partida-finalizada', {
+      ganador,
+      perdedor,
+      motivo,
+      expGanador: EXP_GANADOR,
+      expPerdedor: EXP_PERDEDOR,
+      perfilGanador,
+      perfilPerdedor
+    });
+  } catch (err) {
+    console.error('[ERR] finalizarPartida:', err.message);
   }
-  if (users[perdedor]) {
-    users[perdedor].exp += EXP_PERDEDOR;
-    users[perdedor].nivel = calcularNivel(users[perdedor].exp);
-  }
-
-  emitirAPartida(partida, 'partida-finalizada', {
-    ganador,
-    perdedor,
-    motivo,
-    expGanador: EXP_GANADOR,
-    expPerdedor: EXP_PERDEDOR,
-    perfilGanador: users[ganador] ? { exp: users[ganador].exp, nivel: users[ganador].nivel } : null,
-    perfilPerdedor: users[perdedor] ? { exp: users[perdedor].exp, nivel: users[perdedor].nivel } : null
-  });
-
-  delete games[partida.codigo];
 }
 
 // Validar y ejecutar un ataque. Devuelve {error} o aplica cambios.
@@ -288,23 +287,18 @@ io.on('connection', (socket) => {
       if (typeof password !== 'string' || password.length < 4) {
         return fn({ error: 'La contraseña debe tener al menos 4 caracteres' });
       }
-      if (users[username]) return fn({ error: 'Ese usuario ya existe' });
+      const existente = await db.getUser(username);
+      if (existente) return fn({ error: 'Ese usuario ya existe' });
 
       const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
       let codigo = generarCodigo();
-      while (Object.values(users).some(u => u.codigo === codigo)) codigo = generarCodigo();
+      while (await db.codigoEnUso(codigo)) codigo = generarCodigo();
 
-      users[username] = {
-        passwordHash,
-        exp: 0,
-        nivel: 1,
-        friends: [],
-        codigo
-      };
+      await db.createUser(username, passwordHash, codigo);
 
       usuarioActual = username;
       registrarSesion(socket, username);
-      const token = crearSesion(username);
+      const token = await db.createSession(username);
       console.log(`[OK] Registrado: ${username}`);
       fn({
         success: true,
@@ -327,7 +321,7 @@ io.on('connection', (socket) => {
       const { username, password } = data || {};
       if (!username || !password) return fn({ error: 'Usuario y contraseña requeridos' });
 
-      const user = users[username];
+      const user = await db.getUser(username);
       if (!user) return fn({ error: 'Usuario no encontrado' });
 
       const valido = await bcrypt.compare(password, user.passwordHash);
@@ -335,7 +329,7 @@ io.on('connection', (socket) => {
 
       usuarioActual = username;
       registrarSesion(socket, username);
-      const token = crearSesion(username);
+      const token = await db.createSession(username);
       console.log(`[OK] Login: ${username}`);
       fn({
         success: true,
@@ -352,14 +346,14 @@ io.on('connection', (socket) => {
   });
 
   // ---------- VERIFICAR SESIÓN (auto-login con token) ----------
-  socket.on('verificar-sesion', (data, callback) => {
+  socket.on('verificar-sesion', async (data, callback) => {
     const fn = typeof callback === 'function' ? callback : () => {};
     const { token } = data || {};
-    const sesion = token ? validarSesion(token) : null;
+    const sesion = token ? await db.getSession(token) : null;
     if (!sesion) return fn({ error: 'Sesión no válida o expirada' });
 
     const username = sesion.username;
-    const user = users[username];
+    const user = await db.getUser(username);
     if (!user) return fn({ error: 'El usuario de esta sesión ya no existe' });
 
     usuarioActual = username;
@@ -375,16 +369,16 @@ io.on('connection', (socket) => {
   });
 
   // ---------- CERRAR SESIÓN ----------
-  socket.on('cerrar-sesion', (data, callback) => {
+  socket.on('cerrar-sesion', async (data, callback) => {
     const fn = typeof callback === 'function' ? callback : () => {};
     const { token } = data || {};
 
-    if (token && sessions[token]) {
-      const usernameSesion = sessions[token].username;
-      delete sessions[token];
+    if (token) {
+      const sesion = await db.getSession(token);
+      await db.deleteSession(token); // limpiar siempre (aunque esté expirada)
 
       // Si ESTE socket era ese usuario, desregistrar su presencia
-      if (usuarioActual && usuarioActual === usernameSesion) {
+      if (sesion && usuarioActual && usuarioActual === sesion.username) {
         manejarSalida(socket, usuarioActual);
         usuarioActual = null;
       }
@@ -393,10 +387,11 @@ io.on('connection', (socket) => {
   });
 
   // ---------- CREAR PARTIDA ----------
-  socket.on('crear-partida', (data, callback) => {
+  socket.on('crear-partida', async (data, callback) => {
     const fn = typeof callback === 'function' ? callback : () => {};
     const { username } = data || {};
-    if (!username || !users[username]) return fn({ error: 'Debes iniciar sesión primero' });
+    const user = username ? await db.getUser(username) : null;
+    if (!user) return fn({ error: 'Debes iniciar sesión primero' });
 
     // Abandonar partida previa si existe
     const previa = Object.values(games).find(g => g.p1 === username || g.p2 === username);
@@ -411,10 +406,11 @@ io.on('connection', (socket) => {
   });
 
   // ---------- UNIRSE A PARTIDA ----------
-  socket.on('unirse-partida', (data, callback) => {
+  socket.on('unirse-partida', async (data, callback) => {
     const fn = typeof callback === 'function' ? callback : () => {};
     const { username, codigo } = data || {};
-    if (!username || !users[username]) return fn({ error: 'Debes iniciar sesión primero' });
+    const userQueSeUne = username ? await db.getUser(username) : null;
+    if (!userQueSeUne) return fn({ error: 'Debes iniciar sesión primero' });
 
     const partida = games[codigo];
     if (!partida) return fn({ error: 'No existe una partida con ese código' });
@@ -517,54 +513,49 @@ io.on('connection', (socket) => {
   });
 
   // ---------- AMIGOS: LISTA ----------
-  socket.on('solicitar-amigos', (data, callback) => {
+  socket.on('solicitar-amigos', async (data, callback) => {
     const fn = typeof callback === 'function' ? callback : () => {};
     const { username } = data || {};
-    const user = users[username];
+    const user = await db.getUser(username);
     if (!user) return fn({ error: 'Usuario no válido' });
 
-    const amigos = user.friends.map(nombre => ({
+    const amigos = await Promise.all(user.friends.map(async nombre => ({
       nombre,
       online: usuarioConectado(nombre),
-      codigo: users[nombre] ? users[nombre].codigo : '---'
-    }));
+      codigo: (await db.getUser(nombre)) ? (await db.getUser(nombre)).codigo : '---'
+    })));
 
-    const solicitudes = (friendRequests[username] || [])
-      .filter(r => r.estado === 'pendiente')
-      .map(r => ({ de: r.de, fecha: r.fecha }));
-
+    const solicitudes = await db.listRequests(username);
     fn({ success: true, amigos, solicitudes });
   });
 
   // ---------- RANKING GLOBAL ----------
-  socket.on('solicitar-ranking', (data, callback) => {
+  socket.on('solicitar-ranking', async (data, callback) => {
     const fn = typeof callback === 'function' ? callback : () => {};
     const { username } = data || {};
-    fn({ success: true, ...construirRanking(users, username, 25) });
+    const usuariosParaRanking = await db.getAllUsersForRanking();
+    fn({ success: true, ...construirRanking(usuariosParaRanking, username, 25) });
   });
 
   // ---------- AMIGOS: AGREGAR ----------
-  socket.on('agregar-amigo', (data, callback) => {
+  socket.on('agregar-amigo', async (data, callback) => {
     const fn = typeof callback === 'function' ? callback : () => {};
     const { username, codigoAmigo } = data || {};
-    const user = users[username];
+    const user = await db.getUser(username);
     if (!user) return fn({ error: 'Usuario no válido' });
 
-    // Buscar usuario por codigo
-    const nombreObjetivo = Object.keys(users).find(
-      nombre => users[nombre].codigo === String(codigoAmigo).toUpperCase().trim()
-    );
+    // Buscar usuario por código
+    const objetivo = await db.getUserByCodigo(String(codigoAmigo).toUpperCase().trim());
+    const nombreObjetivo = objetivo ? objetivo.username : null;
 
     if (!nombreObjetivo) return fn({ error: 'No existe ningún usuario con ese código' });
     if (nombreObjetivo === username) return fn({ error: 'No puedes agregarte a ti mismo' });
     if (user.friends.includes(nombreObjetivo)) return fn({ error: 'Ya son amigos' });
 
-    if (!friendRequests[nombreObjetivo]) friendRequests[nombreObjetivo] = [];
-    if (friendRequests[nombreObjetivo].some(r => r.de === username)) {
-      return fn({ error: 'Ya enviaste una solicitud a este usuario' });
-    }
+    const yaEnviada = await db.getRequest(username, nombreObjetivo);
+    if (yaEnviada) return fn({ error: 'Ya enviaste una solicitud a este usuario' });
 
-    friendRequests[nombreObjetivo].push({ de: username, estado: 'pendiente', fecha: new Date() });
+    await db.addRequest(username, nombreObjetivo);
 
     // Notificar en tiempo real si está conectado
     io.to(`user:${nombreObjetivo}`).emit('solicitud-amistad-recibida', { de: username });
@@ -574,32 +565,33 @@ io.on('connection', (socket) => {
   });
 
   // ---------- AMIGOS: ACEPTAR ----------
-  socket.on('aceptar-amistad', (data, callback) => {
+  socket.on('aceptar-amistad', async (data, callback) => {
     const fn = typeof callback === 'function' ? callback : () => {};
     const { username, de } = data || {};
-    const user = users[username];
+    const user = await db.getUser(username);
     if (!user) return fn({ error: 'Usuario no válido' });
 
-    const solicitudes = friendRequests[username] || [];
-    const idx = solicitudes.findIndex(r => r.de === de && r.estado === 'pendiente');
-    if (idx === -1) return fn({ error: 'No tienes solicitud de este usuario' });
+    const solicitud = await db.getRequest(de, username);
+    if (!solicitud) return fn({ error: 'No tienes solicitud de este usuario' });
 
-    solicitudes.splice(idx, 1);
-    if (!user.friends.includes(de)) user.friends.push(de);
-    if (users[de] && !users[de].friends.includes(username)) users[de].friends.push(username);
+    await db.deleteRequest(de, username);
+    await db.addFriendMutual(username, de);
 
     // Notificar a ambos
     io.to(`user:${de}`).emit('amistad-aceptada', { de: username });
+    console.log(`[OK] Amistad: ${username} y ${de} ahora son amigos`);
     fn({ success: true, mensaje: `¡Ahora son amigos ${username} y ${de}!` });
   });
 
   // ---------- AMIGOS: RETAR A PARTIDA ----------
-  socket.on('invitar-amigo', (data, callback) => {
+  socket.on('invitar-amigo', async (data, callback) => {
     const fn = typeof callback === 'function' ? callback : () => {};
     const { username, amigo } = data || {};
-    if (!username || !users[username]) return fn({ error: 'Debes iniciar sesión' });
-    if (!amigo || !users[amigo]) return fn({ error: 'Ese usuario no existe' });
-    if (!users[username].friends.includes(amigo)) return fn({ error: 'Ese usuario no es tu amigo' });
+    const user = await db.getUser(username);
+    if (!user) return fn({ error: 'Debes iniciar sesión' });
+    const amigoUser = await db.getUser(amigo);
+    if (!amigoUser) return fn({ error: 'Ese usuario no existe' });
+    if (!user.friends.includes(amigo)) return fn({ error: 'Ese usuario no es tu amigo' });
     if (amigo === username) return fn({ error: 'No puedes retarte a ti mismo' });
     if (!usuarioConectado(amigo)) return fn({ error: `${amigo} no está conectado` });
 
@@ -620,10 +612,11 @@ io.on('connection', (socket) => {
   });
 
   // ---------- AMIGOS: RESPONDER RETO ----------
-  socket.on('responder-invitacion', (data, callback) => {
+  socket.on('responder-invitacion', async (data, callback) => {
     const fn = typeof callback === 'function' ? callback : () => {};
     const { username, de, aceptar } = data || {};
-    if (!username || !users[username]) return fn({ error: 'Debes iniciar sesión' });
+    const user = await db.getUser(username);
+    if (!user) return fn({ error: 'Debes iniciar sesión' });
 
     // Solo se puede responder a un reto real y pendiente
     if (pendingInvites[username] !== de) {
@@ -674,21 +667,34 @@ io.on('connection', (socket) => {
 });
 
 // ===== RUTAS HTTP DE SALUD =====
-app.get('/api/health', (req, res) => {
-  res.json({
-    ok: true,
-    usuarios: Object.keys(users).length,
-    partidas: Object.keys(games).length,
-    conectados: Object.keys(onlineSockets).length
-  });
+app.get('/api/health', async (req, res) => {
+  try {
+    const usuarios = await db.countUsers();
+    res.json({
+      ok: true,
+      almacenamiento: db.esPersistente() ? 'postgresql' : 'memoria',
+      usuarios,
+      partidas: Object.keys(games).length,
+      conectados: Object.keys(onlineSockets).length
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // ===== INICIAR (solo si se ejecuta directamente, no al requerirlo en tests) =====
 const PORT = process.env.PORT || 3001;
 if (require.main === module) {
-  server.listen(PORT, () => {
-    console.log(`Servidor Deditos corriendo en http://localhost:${PORT}`);
-  });
+  db.init()
+    .then(() => {
+      server.listen(PORT, () => {
+        console.log(`Servidor Deditos corriendo en http://localhost:${PORT} (almacenamiento: ${db.esPersistente() ? 'PostgreSQL' : 'memoria'})`);
+      });
+    })
+    .catch(err => {
+      console.error('ERROR al inicializar la capa de datos:', err.message);
+      process.exit(1);
+    });
 }
 
 // Exportar lógica pura para pruebas automatizadas
