@@ -77,6 +77,16 @@ async function bateria(db, etiqueta, prefijo) {
   const antes = await db.countUsers();
   check('countUsers >= 3 (los creados)', antes >= 3, antes);
 
+  // --- Rachas ---
+  check('racha inicial 0', (await db.getUser(u1)).racha === 0);
+  check('mejorRacha inicial 0', (await db.getUser(u1)).mejorRacha === 0);
+  await db.updateUser(u1, { racha: 3, mejorRacha: 3 });
+  const conRacha = await db.getUser(u1);
+  check('updateUser guarda racha y mejorRacha', conRacha.racha === 3 && conRacha.mejorRacha === 3, conRacha);
+  await db.updateUser(u2, { racha: 5 });
+  const rankingConRacha = await db.getAllUsersForRanking();
+  check('Ranking incluye rachas', rankingConRacha[u1].racha === 3 && rankingConRacha[u2].racha === 5, rankingConRacha);
+
   // --- Limpieza ---
   await db.borrarUsuariosTest(prefijo);
   check('borrarUsuariosTest elimina usuarios', (await db.getUser(u1)) === null);

@@ -70,6 +70,7 @@
         <button id="btn-unirse-partida" class="btn-accion">Unirse con Código</button>
         <button id="btn-amigos" class="btn-accion">Amigos</button>
         <button id="btn-ranking" class="btn-accion">Ranking</button>
+        <button id="btn-crear-grupo" class="btn-accion btn-grupo">Crear Grupo (3-6)</button>
       </div>
       <div id="estado-partida" class="estado-partida"></div>
     </div>
@@ -160,6 +161,63 @@
       <div id="mi-puesto" class="mi-puesto">Tu puesto global: --</div>
       <div id="tabla-ranking" class="tabla-ranking"></div>
       <button id="btn-volver-juego2" class="btn-volver-al-juego">Volver al juego</button>
+    </div>
+  </div>
+
+  <!-- Pantalla: crear grupo -->
+  <div id="tela-grupo-crear" class="tela hidden">
+    <div class="contenedor-grupo">
+      <h2>CREAR GRUPO</h2>
+      <p class="grupo-explicacion">Selecciona tus amigos conectados (entre 3 y 6 jugadores en total, contándote a ti). Ellos no necesitan ser amigos entre sí.</p>
+      <div id="grupo-amigos-lista" class="grupo-amigos-lista"></div>
+      <div id="grupo-contador" class="grupo-contador">Seleccionados: 0 (mínimo 2 además de ti)</div>
+      <div class="grupo-botones">
+        <button id="btn-grupo-confirmar" class="btn-accion" disabled>Crear Grupo</button>
+        <button id="btn-grupo-volver" class="btn-mini">Volver al juego</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pantalla: sala de espera del grupo -->
+  <div id="tela-grupo-espera" class="tela hidden">
+    <div class="contenedor-grupo">
+      <h2>GRUPO EN ESPERA</h2>
+      <div id="grupo-espera-cuenta" class="grupo-espera-cuenta">60</div>
+      <div id="grupo-espera-lista" class="grupo-espera-lista"></div>
+      <button id="btn-cancelar-grupo" class="btn-inv-rechazar">Cancelar grupo</button>
+    </div>
+  </div>
+
+  <!-- Pantalla: partida de grupo (mesa circular) -->
+  <div id="tela-grupo-juego" class="tela hidden">
+    <div class="header-juego">
+      <div class="info-jugador">
+        <span id="grupo-username-display">--</span>
+      </div>
+      <div class="indicador-turno" id="grupo-indicador-turno">--</div>
+    </div>
+    <div id="grupo-mensaje" class="grupo-mensaje"></div>
+    <div id="mesa-circular" class="mesa-circular"></div>
+    <div class="acciones" style="justify-content: center;">
+      <button id="btn-grupo-dividir" class="btn-dividir" disabled>Dividir Manos</button>
+      <button id="btn-grupo-abandonar" class="btn-mini" hidden>Volver al menú</button>
+    </div>
+    <div id="grupo-resultado" class="resultado hidden">
+      <h4 id="grupo-resultado-titulo"></h4>
+      <p id="grupo-resultado-texto"></p>
+      <button id="btn-grupo-volver-menu" class="btn-jugar-de-nuevo">Volver al menú</button>
+    </div>
+  </div>
+
+  <!-- Overlay de invitación a grupo -->
+  <div id="grupo-invitacion-overlay" class="invitacion-overlay hidden">
+    <div class="invitacion-caja">
+      <h3>INVITACIÓN A GRUPO</h3>
+      <p id="grupo-invitacion-texto"></p>
+      <div class="invitacion-botones">
+        <button id="btn-grupo-aceptar" class="btn-inv-aceptar">Aceptar</button>
+        <button id="btn-grupo-rechazar" class="btn-inv-rechazar">Rechazar</button>
+      </div>
     </div>
   </div>
 

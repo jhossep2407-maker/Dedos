@@ -15,9 +15,20 @@ app.use(express.static(path.join(__dirname, 'public')));
 // ===== ESTADO DEL SERVIDOR =====
 // Persistente (PostgreSQL vía db.js): usuarios, solicitudes, sesiones
 // Efímero (memoria, por naturaleza): partidas activas, retos, presencia online
-const games = {};          // { codigo: partida }
+const games = {};          // { codigo: partida } - partidas 1v1
 const onlineSockets = {};   // { username: Set<socketId> } - sesiones conectadas
-const pendingInvites = {};  // { receptor: emisor } - retos pendientes
+const pendingInvites = {};  // { receptor: emisor } - retos 1v1 pendientes
+
+// ===== MOTOR DE GRUPOS (apartado ADICIONAL - no modifica el 1v1) =====
+const grupos = {};          // grupos en espera: { id: { id, creador, invitados: [{username, estado}], expira } }
+const grupoGames = {};      // partidas de grupo: { id: { id, asientos: [{username, manos, vivo, activo}], turnoActual, enCurso } }
+const grupoInvites = {};    // invitaciones a grupo: { receptor: { grupoId, de } }
+
+const GRUPO_MIN = 3;   // incluyendo al creador
+const GRUPO_MAX = 6;
+const EXP_GANADOR_GRUPO = 150;
+const EXP_PERDEDOR_GRUPO = 10;
+const TIEMPO_ESPERA_GRUPO_MS = parseInt(process.env.GRUPO_TIMEOUT_MS || '60000', 10);
 
 const SALT_ROUNDS = 10;
 
@@ -132,6 +143,45 @@ function manejarSalida(socket, username) {
   Object.keys(pendingInvites).forEach(receptor => {
     if (pendingInvites[receptor] === username) delete pendingInvites[receptor];
   });
+
+  // ===== LIMPIEZA DE GRUPOS =====
+
+  // Si es creador de un grupo en espera → disolverlo
+  Object.values(grupos).forEach(grupo => {
+    if (grupo.creador === username) {
+      disolverGrupo(grupo.id, 'El creador se desconectó');
+    } else if (grupo.invitados.some(i => i.username === username && i.estado === 'pendiente')) {
+      disolverGrupo(grupo.id, `${username} se desconectó antes de responder`);
+    }
+  });
+  if (grupoInvites[username]) delete grupoInvites[username];
+
+  // Si estaba en una partida de grupo:
+  //  - vivo → queda eliminado (y el turno pasa al siguiente si era suyo)
+  //  - ya eliminado (espectador) → nada
+  const gJuego = Object.values(grupoGames).find(
+    g => g.enCurso && g.asientos.some(a => a.username === username)
+  );
+  if (gJuego) {
+    const yo = gJuego.asientos.find(a => a.username === username);
+    yo.activo = false; // ya no recibirá más emisiones
+    if (yo.vivo) {
+      yo.vivo = false;
+      const vivos = gJuego.asientos.filter(a => a.vivo);
+      if (vivos.length <= 1) {
+        finalizarGrupo(gJuego, vivos[0].username, `${username} se desconectó`);
+      } else {
+        if (gJuego.turnoActual === username) {
+          const idx = gJuego.asientos.indexOf(yo);
+          gJuego.turnoActual = siguienteTurnoGrupo(gJuego.asientos, idx);
+        }
+        emitirAGrupo(gJuego, 'grupo-partida-actualizada', {
+          partida: vistaPublicaGrupo(gJuego),
+          mensaje: `${username} se desconectó y quedó eliminado`
+        });
+      }
+    }
+  }
 }
 
 // Construir el ranking global (función pura, testable).
@@ -139,7 +189,13 @@ function manejarSalida(socket, username) {
 // si está FUERA del top, su propia fila (yo) para mostrarla aparte.
 function construirRanking(usersObj, username, limite = 25) {
   const todos = Object.entries(usersObj)
-    .map(([nombre, u]) => ({ username: nombre, exp: u.exp, nivel: u.nivel }))
+    .map(([nombre, u]) => ({
+      username: nombre,
+      exp: u.exp,
+      nivel: u.nivel,
+      racha: u.racha || 0,
+      mejorRacha: u.mejorRacha || 0
+    }))
     .sort((a, b) => b.exp - a.exp || a.username.localeCompare(b.username));
 
   const top = todos.slice(0, limite).map((u, i) => ({ puesto: i + 1, ...u }));
@@ -149,11 +205,14 @@ function construirRanking(usersObj, username, limite = 25) {
   if (username && usersObj[username]) {
     miPuesto = todos.findIndex(u => u.username === username) + 1;
     if (miPuesto > limite) {
+      const u = usersObj[username];
       yo = {
         puesto: miPuesto,
         username,
-        exp: usersObj[username].exp,
-        nivel: usersObj[username].nivel
+        exp: u.exp,
+        nivel: u.nivel,
+        racha: u.racha || 0,
+        mejorRacha: u.mejorRacha || 0
       };
     }
   }
@@ -179,16 +238,20 @@ async function finalizarPartida(partida, ganador, motivo) {
       if (ug) {
         const nuevoExp = ug.exp + EXP_GANADOR;
         const nuevoNivel = calcularNivel(nuevoExp);
-        await db.updateUser(ganador, { exp: nuevoExp, nivel: nuevoNivel });
-        perfilGanador = { exp: nuevoExp, nivel: nuevoNivel };
+        const racha = (ug.racha || 0) + 1;
+        const mejorRacha = Math.max(racha, ug.mejorRacha || 0);
+        await db.updateUser(ganador, { exp: nuevoExp, nivel: nuevoNivel, racha, mejorRacha });
+        perfilGanador = { exp: nuevoExp, nivel: nuevoNivel, racha, mejorRacha };
       }
       const up = await db.getUser(perdedor);
       if (up) {
         const nuevoExp = up.exp + EXP_PERDEDOR;
         const nuevoNivel = calcularNivel(nuevoExp);
-        await db.updateUser(perdedor, { exp: nuevoExp, nivel: nuevoNivel });
-        perfilPerdedor = { exp: nuevoExp, nivel: nuevoNivel };
+        await db.updateUser(perdedor, { exp: nuevoExp, nivel: nuevoNivel, racha: 0 });
+        perfilPerdedor = { exp: nuevoExp, nivel: nuevoNivel, racha: 0, mejorRacha: up.mejorRacha || 0 };
       }
+      // Log de finalización (útil en producción)
+      console.log(`[OK] 1v1 finalizada: gana ${ganador} (+${EXP_GANADOR}), pierde ${perdedor} (+${EXP_PERDEDOR})`);
     } catch (err) {
       console.error('[ERR] actualizando EXP en la base de datos:', err.message);
     }
@@ -267,6 +330,170 @@ function ejecutarDivision(manos) {
   manos.izq = { count: mitad, alive: true };
   manos.der = { count: mitad, alive: true };
   return { ok: true, mitad };
+}
+
+// ===== FUNCIONES PURAS DEL MOTOR DE GRUPO =====
+
+// Daño a una mano con las mismas reglas de Deditos (versión pura para grupos):
+// total=5 muere exacta; total>5 muere y el exceso pasa a la otra mano
+// (la REVIVE si estaba muerta; si la mata, ambas mueren).
+function danioMano(manos, ladoObjetivo, dedosAtacante) {
+  const mano = manos[ladoObjetivo];
+  const total = dedosAtacante + mano.count;
+
+  if (total === 5) {
+    mano.alive = false;
+    mano.count = 5;
+  } else if (total > 5) {
+    const exceso = total - 5;
+    mano.alive = false;
+    mano.count = 5;
+    const otroLado = ladoObjetivo === 'izq' ? 'der' : 'izq';
+    const otra = manos[otroLado];
+    if (otra.alive) {
+      const nuevoTotal = otra.count + exceso;
+      if (nuevoTotal >= 5) {
+        otra.alive = false;
+        otra.count = Math.min(nuevoTotal, 5);
+      } else {
+        otra.count = nuevoTotal;
+      }
+    } else {
+      otra.alive = true;
+      otra.count = exceso;
+    }
+  } else {
+    mano.count = total;
+  }
+  return { ok: true };
+}
+
+// Turno de grupo: la VÍCTIMA juega; si quedó eliminada, sigue el próximo
+// jugador vivo en el orden de la mesa (sentido horario desde su asiento).
+function siguienteTurnoGrupo(asientos, indiceVictima) {
+  if (asientos[indiceVictima].vivo) return asientos[indiceVictima].username;
+  for (let i = 1; i <= asientos.length; i++) {
+    const idx = (indiceVictima + i) % asientos.length;
+    if (asientos[idx].vivo) return asientos[idx].username;
+  }
+  return null;
+}
+
+// ¿Está en una partida activa (1v1 o de grupo)?
+function enPartidaActiva(username) {
+  const en1v1 = Object.values(games).some(g => g.enCurso && (g.p1 === username || g.p2 === username));
+  const enGrupo = Object.values(grupoGames).some(
+    g => g.enCurso && g.asientos.some(a => a.username === username)
+  );
+  return en1v1 || enGrupo;
+}
+
+// ¿Está en un grupo en espera (como creador o invitado)?
+function enGrupoEspera(username) {
+  return Object.values(grupos).some(
+    g => g.creador === username || g.invitados.some(i => i.username === username)
+  );
+}
+
+function vistaPublicaGrupo(partida) {
+  return {
+    id: partida.id,
+    asientos: partida.asientos.map(a => ({ username: a.username, manos: a.manos, vivo: a.vivo })),
+    turnoActual: partida.turnoActual,
+    enCurso: partida.enCurso
+  };
+}
+
+function vistaGrupoEspera(grupo) {
+  return {
+    id: grupo.id,
+    creador: grupo.creador,
+    invitados: grupo.invitados.map(i => ({ username: i.username, estado: i.estado })),
+    segundos: Math.max(0, Math.round((grupo.expira - Date.now()) / 1000))
+  };
+}
+
+function emitirAGrupo(partida, evento, datos) {
+  partida.asientos.forEach(a => {
+    if (a.activo !== false) io.to(`user:${a.username}`).emit(evento, datos);
+  });
+}
+
+// Disolver un grupo en espera y notificar a todos los involucrados
+function disolverGrupo(id, motivo) {
+  const grupo = grupos[id];
+  if (!grupo) return;
+  delete grupos[id];
+  grupo.invitados.forEach(i => {
+    if (grupoInvites[i.username] && grupoInvites[i.username].grupoId === id) {
+      delete grupoInvites[i.username];
+    }
+  });
+  const todos = [grupo.creador, ...grupo.invitados.map(i => i.username)];
+  todos.forEach(n => io.to(`user:${n}`).emit('grupo-cancelado', { grupoId: id, motivo }));
+  console.log(`[..] Grupo ${id} disuelto: ${motivo}`);
+}
+
+// Todos aceptaron → crear la partida de grupo
+function iniciarGrupo(grupo) {
+  delete grupos[grupo.id];
+  const asientos = [
+    { username: grupo.creador, manos: estadoInicialManos(), vivo: true, activo: true },
+    ...grupo.invitados.map(i => ({ username: i.username, manos: estadoInicialManos(), vivo: true, activo: true }))
+  ];
+  const partida = { id: grupo.id, asientos, turnoActual: grupo.creador, enCurso: true };
+  grupoGames[grupo.id] = partida;
+  console.log(`[OK] Grupo ${grupo.id}: ${asientos.map(a => a.username).join(' vs ')}. Empieza ${grupo.creador} (creador)`);
+  emitirAGrupo(partida, 'grupo-partida-iniciada', {
+    partida: vistaPublicaGrupo(partida),
+    mensaje: `¡Grupo completo! Empieza ${grupo.creador}`
+  });
+}
+
+// Expiración automática del grupo (60s por defecto)
+function expirarGrupo(id) {
+  if (grupos[id]) disolverGrupo(id, 'Se agotó el tiempo de espera (nadie respondió)');
+}
+
+// Finalizar partida de grupo: 1 ganador (+150, racha+1), resto (+10, racha=0)
+async function finalizarGrupo(partida, ganador, motivo) {
+  partida.enCurso = false;
+  delete grupoGames[partida.id];
+
+  const perfiles = {};
+  for (const a of partida.asientos) {
+    try {
+      const u = await db.getUser(a.username);
+      if (!u) continue;
+      if (a.username === ganador) {
+        const nuevoExp = u.exp + EXP_GANADOR_GRUPO;
+        const racha = (u.racha || 0) + 1;
+        const mejorRacha = Math.max(racha, u.mejorRacha || 0);
+        await db.updateUser(a.username, {
+          exp: nuevoExp, nivel: calcularNivel(nuevoExp), racha, mejorRacha
+        });
+        perfiles[a.username] = { exp: nuevoExp, nivel: calcularNivel(nuevoExp), racha, expGanada: EXP_GANADOR_GRUPO };
+      } else {
+        const nuevoExp = u.exp + EXP_PERDEDOR_GRUPO;
+        const nuevoNivel = calcularNivel(nuevoExp);
+        await db.updateUser(a.username, {
+          exp: nuevoExp, nivel: nuevoNivel, racha: 0
+        });
+        perfiles[a.username] = { exp: nuevoExp, nivel: nuevoNivel, racha: 0, expGanada: EXP_PERDEDOR_GRUPO };
+      }
+    } catch (err) {
+      console.error('[ERR] actualizando EXP de grupo:', err.message);
+    }
+  }
+
+  console.log(`[OK] Grupo ${partida.id} terminado. Ganador: ${ganador} (+${EXP_GANADOR_GRUPO} EXP)`);
+  emitirAGrupo(partida, 'grupo-partida-finalizada', {
+    ganador,
+    motivo,
+    perfiles,
+    expGanador: EXP_GANADOR_GRUPO,
+    expPerdedor: EXP_PERDEDOR_GRUPO
+  });
 }
 
 // ===== SOCKET.IO =====
@@ -400,6 +627,13 @@ io.on('connection', (socket) => {
     }
     if (previa) delete games[previa.codigo];
 
+    // Protección de modo grupo: no crear 1v1 mientras se juega o espera un grupo
+    const enGrupoJuego = Object.values(grupoGames).some(
+      g => g.enCurso && g.asientos.some(a => a.username === username)
+    );
+    if (enGrupoJuego) return fn({ error: 'Estás en una partida de grupo' });
+    if (enGrupoEspera(username)) return fn({ error: 'Estás esperando un grupo' });
+
     const partida = nuevaPartida(username, `user:${username}`);
     console.log(`[OK] Partida creada: ${partida.codigo} por ${username}`);
     fn({ success: true, codigo: partida.codigo });
@@ -416,6 +650,13 @@ io.on('connection', (socket) => {
     if (!partida) return fn({ error: 'No existe una partida con ese código' });
     if (partida.enCurso) return fn({ error: 'La partida ya está completa' });
     if (partida.p1 === username) return fn({ error: 'No puedes unirte a tu propia partida' });
+
+    // Protección de modo grupo: no unirse a un 1v1 mientras se juega o espera un grupo
+    const enGrupoJuego2 = Object.values(grupoGames).some(
+      g => g.enCurso && g.asientos.some(a => a.username === username)
+    );
+    if (enGrupoJuego2) return fn({ error: 'Estás en una partida de grupo' });
+    if (enGrupoEspera(username)) return fn({ error: 'Estás esperando un grupo' });
 
     partida.p2 = username;
     partida.sockets.p2 = `user:${username}`;
@@ -595,11 +836,16 @@ io.on('connection', (socket) => {
     if (amigo === username) return fn({ error: 'No puedes retarte a ti mismo' });
     if (!usuarioConectado(amigo)) return fn({ error: `${amigo} no está conectado` });
 
-    // Nadie en partida en curso
+    // Nadie en partida en curso (1v1 o grupo) ni esperando un grupo
     const ocupado = Object.values(games).find(
       g => g.enCurso && (g.p1 === username || g.p2 === username || g.p1 === amigo || g.p2 === amigo)
     );
     if (ocupado) return fn({ error: 'Alguno de los dos ya está en una partida' });
+    if (enPartidaActiva(username) || enPartidaActiva(amigo)) {
+      return fn({ error: 'Alguno de los dos ya está en una partida' });
+    }
+    if (enGrupoEspera(username)) return fn({ error: 'Estás esperando un grupo' });
+    if (enGrupoEspera(amigo)) return fn({ error: `${amigo} está esperando un grupo` });
 
     // Limpiar partida en espera del invitador (ya no la necesita)
     const enEspera = Object.values(games).find(g => !g.enCurso && g.p1 === username);
@@ -633,11 +879,15 @@ io.on('connection', (socket) => {
     // Aceptado: el invitador debe seguir conectado (en alguna sesión)
     if (!usuarioConectado(de)) return fn({ error: `${de} ya no está conectado` });
 
-    // Nadie en partida en curso
+    // Nadie en partida en curso (1v1 o grupo) ni esperando un grupo
     const ocupado = Object.values(games).find(
       g => g.enCurso && (g.p1 === de || g.p2 === de || g.p1 === username || g.p2 === username)
     );
     if (ocupado) return fn({ error: 'Alguno de los dos ya está en una partida' });
+    if (enPartidaActiva(username)) return fn({ error: 'Ya estás en una partida' });
+    if (enPartidaActiva(de)) return fn({ error: `${de} ya está en una partida` });
+    if (enGrupoEspera(username)) return fn({ error: 'Estás esperando un grupo' });
+    if (enGrupoEspera(de)) return fn({ error: `${de} está esperando un grupo` });
 
     // Crear la partida privada directamente (las salas personales llegan a todas las sesiones)
     const partida = nuevaPartida(de, `user:${de}`);
@@ -654,6 +904,223 @@ io.on('connection', (socket) => {
     });
 
     fn({ success: true, aceptado: true, codigo: partida.codigo });
+  });
+
+  // ==================== EVENTOS DE GRUPO (apartado adicional) ====================
+
+  // ---------- GRUPO: CREAR ----------
+  socket.on('crear-grupo', async (data, callback) => {
+    const fn = typeof callback === 'function' ? callback : () => {};
+    const { username, invitados } = data || {};
+    const user = await db.getUser(username);
+    if (!user) return fn({ error: 'Debes iniciar sesión' });
+
+    if (!Array.isArray(invitados) || invitados.length < GRUPO_MIN - 1 || invitados.length > GRUPO_MAX - 1) {
+      return fn({ error: `El grupo necesita entre ${GRUPO_MIN} y ${GRUPO_MAX} jugadores en total (tú + tus invitados)` });
+    }
+    if (invitados.some(n => n === username)) {
+      return fn({ error: 'No puedes invitarte a ti mismo' });
+    }
+    if (new Set(invitados).size !== invitados.length) {
+      return fn({ error: 'Hay invitados repetidos' });
+    }
+    if (enPartidaActiva(username) || enGrupoEspera(username)) {
+      return fn({ error: 'Ya estás en una partida o esperando un grupo' });
+    }
+
+    // Validar cada invitado: existe, es amigo del creador, está conectado y libre
+    for (const nombre of invitados) {
+      const invUser = await db.getUser(nombre);
+      if (!invUser) return fn({ error: `El usuario "${nombre}" no existe` });
+      if (!user.friends.includes(nombre)) {
+        return fn({ error: `"${nombre}" no es tu amigo (los invitados deben ser TUS amigos)` });
+      }
+      if (!usuarioConectado(nombre)) return fn({ error: `${nombre} no está conectado` });
+      if (enPartidaActiva(nombre)) return fn({ error: `${nombre} ya está en una partida` });
+      if (enGrupoEspera(nombre)) return fn({ error: `${nombre} ya está esperando otro grupo` });
+    }
+
+    // Crear el grupo
+    let id = generarCodigo();
+    while (grupos[id] || grupoGames[id] || games[id]) id = generarCodigo();
+    grupos[id] = {
+      id,
+      creador: username,
+      invitados: invitados.map(n => ({ username: n, estado: 'pendiente' })),
+      expira: Date.now() + TIEMPO_ESPERA_GRUPO_MS
+    };
+
+    // Enviar invitaciones a todos
+    const jugadores = [username, ...invitados];
+    invitados.forEach(n => {
+      grupoInvites[n] = { grupoId: id, de: username };
+      io.to(`user:${n}`).emit('grupo-invitacion', {
+        de: username,
+        grupoId: id,
+        jugadores,
+        segundos: Math.round(TIEMPO_ESPERA_GRUPO_MS / 1000)
+      });
+    });
+
+    setTimeout(() => expirarGrupo(id), TIEMPO_ESPERA_GRUPO_MS + 300);
+
+    console.log(`[OK] Grupo ${id} creado por ${username} con ${invitados.join(', ')}`);
+    fn({ success: true, grupo: vistaGrupoEspera(grupos[id]) });
+  });
+
+  // ---------- GRUPO: RESPONDER INVITACIÓN ----------
+  socket.on('responder-grupo', async (data, callback) => {
+    const fn = typeof callback === 'function' ? callback : () => {};
+    const { username, grupoId, aceptar } = data || {};
+    const inv = grupoInvites[username];
+    const grupo = grupos[grupoId];
+
+    if (!inv || !grupo || inv.grupoId !== grupoId) {
+      return fn({ error: 'No tienes invitación pendiente para este grupo' });
+    }
+    delete grupoInvites[username];
+
+    if (!aceptar) {
+      disolverGrupo(grupoId, `${username} rechazó la invitación`);
+      return fn({ success: true, aceptado: false });
+    }
+
+    // Si quedó ocupado en otra partida mientras esperaba responder → disolver por él
+    if (enPartidaActiva(username)) {
+      disolverGrupo(grupoId, `${username} está ocupado en otra partida`);
+      return fn({ success: true, aceptado: false, motivo: 'Estás en otra partida' });
+    }
+
+    const item = grupo.invitados.find(i => i.username === username);
+    item.estado = 'aceptado';
+
+    // Notificar el nuevo estado a todos los involucrados
+    const vista = vistaGrupoEspera(grupo);
+    [grupo.creador, ...grupo.invitados.map(i => i.username)].forEach(n => {
+      io.to(`user:${n}`).emit('grupo-actualizado', { grupo: vista });
+    });
+
+    // IMPORTANTÍSIMO: responder al cliente ANTES de iniciar la partida.
+    // Así, quien acepta de último procesa su callback (sala de espera) antes
+    // de que llegue 'grupo-partida-iniciada' (que lo lleva al juego).
+    fn({ success: true, aceptado: true });
+
+    // ¿Todos aceptaron? → iniciar la partida de grupo
+    if (grupo.invitados.every(i => i.estado === 'aceptado')) {
+      iniciarGrupo(grupo);
+    }
+  });
+
+  // ---------- GRUPO: CANCELAR (solo el creador, en espera) ----------
+  socket.on('cancelar-grupo', (data, callback) => {
+    const fn = typeof callback === 'function' ? callback : () => {};
+    const { username, grupoId } = data || {};
+    const grupo = grupos[grupoId];
+    if (!grupo) return fn({ error: 'Ese grupo ya no existe' });
+    if (grupo.creador !== username) return fn({ error: 'Solo el creador puede cancelar el grupo' });
+    disolverGrupo(grupoId, 'El creador canceló el grupo');
+    fn({ success: true });
+  });
+
+  // ---------- GRUPO: ATACAR ----------
+  socket.on('grupo-atacar', (data) => {
+    const { username, grupoId, oponente, manoAtacante, manoObjetivo } = data || {};
+    const g = grupoGames[grupoId];
+    if (!g || !g.enCurso) return;
+
+    if (g.turnoActual !== username) {
+      return io.to(`user:${username}`).emit('grupo-error', { mensaje: 'No es tu turno' });
+    }
+    const atacante = g.asientos.find(a => a.username === username);
+    const victima = g.asientos.find(a => a.username === oponente);
+    if (!atacante || !atacante.vivo) {
+      return io.to(`user:${username}`).emit('grupo-error', { mensaje: 'No estás activo en esta partida' });
+    }
+    if (!victima) {
+      return io.to(`user:${username}`).emit('grupo-error', { mensaje: 'Ese jugador no está en el grupo' });
+    }
+    if (victima.username === atacante.username) {
+      return io.to(`user:${username}`).emit('grupo-error', { mensaje: 'No puedes atacarte a ti mismo' });
+    }
+    if (!victima.vivo) {
+      return io.to(`user:${username}`).emit('grupo-error', { mensaje: 'Ese jugador ya está eliminado' });
+    }
+    if (!['izq', 'der'].includes(manoAtacante) || !['izq', 'der'].includes(manoObjetivo)) {
+      return io.to(`user:${username}`).emit('grupo-error', { mensaje: 'Mano inválida' });
+    }
+    if (!atacante.manos[manoAtacante].alive) {
+      return io.to(`user:${username}`).emit('grupo-error', { mensaje: 'Tu mano atacante está muerta' });
+    }
+    if (!victima.manos[manoObjetivo].alive) {
+      return io.to(`user:${username}`).emit('grupo-error', { mensaje: 'La mano objetivo ya está muerta' });
+    }
+
+    // Aplicar el daño (mismas reglas de Deditos)
+    danioMano(victima.manos, manoObjetivo, atacante.manos[manoAtacante].count);
+
+    const mensajes = [`${username} atacó a ${victima.username} con su mano ${manoAtacante}`];
+    const idxVictima = g.asientos.indexOf(victima);
+
+    // ¿La víctima quedó eliminada?
+    if (manosVivas(victima.manos) === 0 && victima.vivo) {
+      victima.vivo = false;
+      io.to(`user:${victima.username}`).emit('grupo-eliminado', {
+        mensaje: 'Quedaste eliminado. Verás el resto de la partida como espectador.'
+      });
+      mensajes.push(`${victima.username} quedó ELIMINADO`);
+    }
+
+    // ¿Queda un solo vivo? → victoria
+    const vivos = g.asientos.filter(a => a.vivo);
+    if (vivos.length <= 1) {
+      return finalizarGrupo(g, vivos[0].username, `${vivos[0].username} eliminó a todos los demás`);
+    }
+
+    // Regla de turno: la VÍCTIMA juega; si fue eliminada, el próximo vivo en la mesa
+    g.turnoActual = siguienteTurnoGrupo(g.asientos, idxVictima);
+
+    emitirAGrupo(g, 'grupo-partida-actualizada', {
+      partida: vistaPublicaGrupo(g),
+      mensaje: mensajes.join('. ')
+    });
+  });
+
+  // ---------- GRUPO: DIVIDIR (acción libre, igual que en 1v1) ----------
+  socket.on('grupo-dividir', (data) => {
+    const { username, grupoId } = data || {};
+    const g = grupoGames[grupoId];
+    if (!g || !g.enCurso) return;
+    if (g.turnoActual !== username) {
+      return io.to(`user:${username}`).emit('grupo-error', { mensaje: 'No es tu turno' });
+    }
+    const asiento = g.asientos.find(a => a.username === username);
+    if (!asiento || !asiento.vivo) return;
+
+    const resultado = ejecutarDivision(asiento.manos);
+    if (resultado.error) {
+      return io.to(`user:${username}`).emit('grupo-error', { mensaje: resultado.error });
+    }
+
+    // Acción libre: NO cambia el turno
+    emitirAGrupo(g, 'grupo-partida-actualizada', {
+      partida: vistaPublicaGrupo(g),
+      mensaje: `${username} dividió sus manos en ${resultado.mitad} y ${resultado.mitad}. ¡Sigue su turno, debe atacar!`
+    });
+  });
+
+  // ---------- GRUPO: ABANDONAR (solo eliminados/espectadores) ----------
+  socket.on('abandonar-grupo', (data, callback) => {
+    const fn = typeof callback === 'function' ? callback : () => {};
+    const { username, grupoId } = data || {};
+    const g = grupoGames[grupoId];
+    if (!g) return fn({ success: true }); // la partida ya terminó
+    const asiento = g.asientos.find(a => a.username === username);
+    if (!asiento) return fn({ error: 'No perteneces a este grupo' });
+    if (asiento.vivo && g.enCurso) {
+      return fn({ error: 'Sigues en juego: primero debes quedar eliminado' });
+    }
+    asiento.activo = false; // deja de recibir actualizaciones
+    fn({ success: true });
   });
 
   // ---------- DESCONEXIÓN ----------
@@ -698,4 +1165,4 @@ if (require.main === module) {
 }
 
 // Exportar lógica pura para pruebas automatizadas
-module.exports = { ejecutarAtaque, ejecutarDivision, construirRanking, estadoInicialManos, calcularNivel, generarCodigo, io };
+module.exports = { ejecutarAtaque, ejecutarDivision, construirRanking, danioMano, siguienteTurnoGrupo, estadoInicialManos, calcularNivel, generarCodigo, io };

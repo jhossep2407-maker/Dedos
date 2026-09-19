@@ -10,8 +10,9 @@ const USA_DB = !!process.env.DATABASE_URL;
 const SUFIJO = USA_DB ? '_' + Date.now().toString(36).slice(-6) : '';
 const NOMBRE1 = 'jugadoruno' + SUFIJO;
 const NOMBRE2 = 'jugadordos' + SUFIJO;
+const NOMBRE3 = 'jugadortres' + SUFIJO;
 
-let erroresConsola = { pag1: [], pag2: [] };
+let erroresConsola = { pag1: [], pag2: [], pag4: [] };
 let fallos = 0;
 function check(nombre, condicion, extra) {
   if (condicion) {
@@ -116,9 +117,13 @@ async function jugarHastaTerminar(pag1, pag2, maxJugadas = 30) {
 }
 
 async function main() {
-  // 1. Levantar servidor
+  // 1. Levantar servidor (grupo expira en 8s en pruebas para no esperar 60s reales)
   console.log('\n=== INICIANDO SERVIDOR ===');
-  const server = spawn('node', ['server.js'], { cwd: __dirname, stdio: 'pipe' });
+  const server = spawn('node', ['server.js'], {
+    cwd: __dirname,
+    stdio: 'pipe',
+    env: { ...process.env, GRUPO_TIMEOUT_MS: '8000' }
+  });
   server.stdout.on('data', d => process.stdout.write(`[SRV] ${d}`));
   server.stderr.on('data', d => process.stdout.write(`[SRV-ERR] ${d}`));
 
@@ -145,6 +150,7 @@ async function main() {
     await dbLimpieza.init();
     await dbLimpieza.borrarUsuariosTest('jugadoruno');
     await dbLimpieza.borrarUsuariosTest('jugadordos');
+    await dbLimpieza.borrarUsuariosTest('jugadortres');
     console.log('(BD: usuarios de pruebas anteriores eliminados)');
   }
 
@@ -443,69 +449,444 @@ async function main() {
   await pag1.click('#btn-jugar-de-nuevo');
   await esperar(300);
   await pag1.click('#btn-ranking');
+  // Esperar el render FRESCO: mi fila debe mostrar el EXP post-partida (no el render
+  // anterior que quedó en el DOM tras cargarRanking de partida-finalizada)
   await pag1.waitForFunction(
-    () => document.querySelectorAll('#tabla-ranking .fila-ranking:not(.cabecera)').length > 0,
-    { timeout: 15000 }
+    (expEsperado) => {
+      const filas = document.querySelectorAll('#tabla-ranking .fila-ranking:not(.cabecera)');
+      if (filas.length === 0) return false;
+      const propia = Array.from(filas).find(f => f.classList.contains('propia'));
+      return propia && parseInt(propia.querySelector('.exp').textContent) === expEsperado;
+    },
+    { timeout: 20000 },
+    num1
   );
   check('Pantalla ranking visible', await pag1.$eval('#tela-ranking', el => !el.classList.contains('hidden')));
 
   const ranking1 = await pag1.evaluate(() => {
     const filas = Array.from(document.querySelectorAll('#tabla-ranking .fila-ranking:not(.cabecera)')).map(f => ({
-      puesto: f.dataset.puesto,
+      puesto: parseInt(f.dataset.puesto),
       username: f.dataset.username,
       exp: f.querySelector('.exp').textContent,
-      tieneMedallaPuesto1: f.classList.contains('top1'),
-      tieneMedallaPuesto2: f.classList.contains('top2'),
+      racha: f.querySelector('.racha') ? f.querySelector('.racha').textContent : '',
+      mejor: f.querySelector('.mejor') ? f.querySelector('.mejor').textContent : '',
+      claseTop: ['top1', 'top2', 'top3'].find(c => f.classList.contains(c)) || null,
       esPropia: f.classList.contains('propia')
     }));
     return { filas, miPuesto: document.getElementById('mi-puesto').textContent };
   });
 
-  const estanAmbos = ranking1.filas.some(f => f.username === NOMBRE1) &&
-                     ranking1.filas.some(f => f.username === NOMBRE2);
-  check('Ambos usuarios aparecen en el ranking', estanAmbos, ranking1.filas);
-  const [primero, segundo] = ranking1.filas;
-  // Orden esperado por EXP (o alfabético en empate)
-  const esperadoPrimero = num1 > num2 ? NOMBRE1 : (num2 > num1 ? NOMBRE2 : (NOMBRE1 < NOMBRE2 ? NOMBRE1 : NOMBRE2));
-  check(`Puesto #1 correcto: ${primero.username} (medalla ${primero.tieneMedallaPuesto1 ? '🥇' : 'NO'})`,
-    primero.username === esperadoPrimero && primero.puesto === '1' && primero.tieneMedallaPuesto1);
-  check(`Puesto #2 con medalla 🥈 (${segundo.username})`, segundo.puesto === '2' && segundo.tieneMedallaPuesto2);
-  check(`EXP del #1 coincide con su pantalla (${primero.exp})`, parseInt(primero.exp) === Math.max(num1, num2));
-  check(`Mi puesto (#${esperadoPrimero === NOMBRE1 ? 1 : 2}) mostrado: "${ranking1.miPuesto}"`,
-    ranking1.miPuesto === `Tu puesto global: #${esperadoPrimero === NOMBRE1 ? 1 : 2}`);
+  // Los tests NO asumen puestos fijos: la BD real (Neon) puede tener usuarios
+  // con más EXP que los usuarios de prueba. Se verifican las posiciones RELATIVAS.
+  const fila1 = ranking1.filas.find(f => f.username === NOMBRE1);
+  const fila2 = ranking1.filas.find(f => f.username === NOMBRE2);
+  check('Ambos usuarios aparecen en el ranking', !!fila1 && !!fila2, ranking1.filas);
   check('Mi fila está destacada (propia)', ranking1.filas.some(f => f.esPropia));
 
-  // Ranking desde pag2: refrescado tras la partida, con su propio puesto
+  const pos1 = fila1 ? fila1.puesto : -1;
+  const pos2 = fila2 ? fila2.puesto : -1;
+
+  // Orden relativo correcto: más EXP → mejor puesto; empate → orden alfabético
+  const ordenOk = num1 > num2
+    ? pos1 < pos2
+    : (num2 > num1 ? pos2 < pos1 : (NOMBRE1 < NOMBRE2 ? pos1 < pos2 : pos2 < pos1));
+  check(`Orden relativo correcto (#${pos1} vs #${pos2}, EXP ${num1} vs ${num2})`, ordenOk);
+
+  // EXP mostrado en el ranking coincide con la pantalla de cada jugador
+  check(`EXP de ${NOMBRE1} en ranking (${fila1.exp}) coincide`, parseInt(fila1.exp) === num1);
+  check(`EXP de ${NOMBRE2} en ranking (${fila2.exp}) coincide`, parseInt(fila2.exp) === num2);
+
+  // "Tu puesto global" coincide con la posición real de la fila
+  check(`Mi puesto mostrado coincide con la fila (${ranking1.miPuesto})`,
+    ranking1.miPuesto === `Tu puesto global: #${pos1}`);
+
+  // Medalla correcta según posición (solo el top 3 la tiene)
+  const medallaOk = [fila1, fila2].every(f => {
+    if (f.puesto <= 3) return f.claseTop === 'top' + f.puesto;
+    return f.claseTop === null;
+  });
+  check('Medallas 🥇🥈🥉 solo en el top 3 y correctas', medallaOk, { pos1, pos2 });
+
+  // Ranking desde pag2: refrescado tras la partida, con su propio puesto coherente
   await pag2.click('#btn-jugar-de-nuevo');
   await esperar(300);
   await pag2.click('#btn-ranking');
   await pag2.waitForFunction(
-    () => document.querySelectorAll('#tabla-ranking .fila-ranking:not(.cabecera)').length > 0,
-    { timeout: 15000 }
+    (expEsperado) => {
+      const filas = document.querySelectorAll('#tabla-ranking .fila-ranking:not(.cabecera)');
+      if (filas.length === 0) return false;
+      const propia = Array.from(filas).find(f => f.classList.contains('propia'));
+      return propia && parseInt(propia.querySelector('.exp').textContent) === expEsperado;
+    },
+    { timeout: 20000 },
+    num2
   );
   const ranking2 = await pag2.evaluate(() => ({
     filas: Array.from(document.querySelectorAll('#tabla-ranking .fila-ranking:not(.cabecera)')).map(f => ({
-      puesto: f.dataset.puesto,
+      puesto: parseInt(f.dataset.puesto),
       username: f.dataset.username
     })),
     miPuesto: document.getElementById('mi-puesto').textContent
   }));
-  const esperadoPuesto2 = (esperadoPrimero === NOMBRE2) ? 1 : 2;
-  check('pag2 ve el mismo #1', ranking2.filas[0] && ranking2.filas[0].username === esperadoPrimero);
-  check(`pag2 ve su propio puesto #${esperadoPuesto2}: "${ranking2.miPuesto}"`,
-    ranking2.miPuesto === `Tu puesto global: #${esperadoPuesto2}`);
+  const fila2v2 = ranking2.filas.find(f => f.username === NOMBRE2);
+  check(`pag2 ve su propio puesto (#${pos2}) coherente con pag1: "${ranking2.miPuesto}"`,
+    !!fila2v2 && fila2v2.puesto === pos2 && ranking2.miPuesto === `Tu puesto global: #${pos2}`);
+
+  // Rachas esperadas tras 2 partidas 1v1 (gano1 = ganó juego 1, gano1b = ganó juego 2)
+  const racha1 = gano1b ? (gano1 ? 2 : 1) : 0;
+  const racha2 = !gano1b ? (!gano1 ? 2 : 1) : 0;
+  const mejor1 = Math.max(gano1 ? 1 : 0, racha1);
+  const mejor2 = Math.max(!gano1 ? 1 : 0, racha2);
+  check(`Racha actual de ${NOMBRE1}: "${fila1.racha}"`,
+    parseInt((fila1.racha.match(/\d+/) || ['0'])[0]) === racha1, { esperado: racha1 });
+  check(`Racha actual de ${NOMBRE2}: "${fila2.racha}"`,
+    parseInt((fila2.racha.match(/\d+/) || ['0'])[0]) === racha2, { esperado: racha2 });
+  check(`Mejor racha de ${NOMBRE1}: "${fila1.mejor}"`, parseInt(fila1.mejor) === mejor1);
+  check(`Mejor racha de ${NOMBRE2}: "${fila2.mejor}"`, parseInt(fila2.mejor) === mejor2);
 
   // Volver al juego en ambas
   await pag1.click('#btn-volver-juego2');
   await pag2.click('#btn-volver-juego2');
   await esperar(300);
 
-  // TEST 12: Errores de consola en TODA la sesión
-  console.log('\n=== TEST 12: Errores de consola en TODA la sesión ===');
-  const totalErrores = erroresConsola.pag1.length + erroresConsola.pag2.length;
-  console.log(`  Errores pag1: ${erroresConsola.pag1.length}, pag2: ${erroresConsola.pag2.length}`);
+  // ================== GRUPOS (modo 3-6 jugadores) ==================
+
+  // Bucle de juego de grupo: el jugador del turno ataca al primer enemigo vivo
+  // Clic por DOM con diagnóstico forense si la mano no es visible/clicable
+  async function clickManoGrupo(pagina, selector) {
+    try {
+      await pagina.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (!el) throw new Error('Mano no encontrada: ' + sel);
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) {
+          let nodo = el;
+          const cadena = [];
+          while (nodo && nodo.nodeType === 1 && cadena.length < 12) {
+            const cs = getComputedStyle(nodo);
+            const rect = nodo.getBoundingClientRect();
+            cadena.push(`<${nodo.tagName.toLowerCase()}${nodo.id ? '#' + nodo.id : ''}${nodo.className ? '.' + nodo.className.toString().trim().split(/\s+/).join('.') : ''} display=${cs.display} w=${Math.round(rect.width)} h=${Math.round(rect.height)}>`);
+            nodo = nodo.parentElement;
+          }
+          throw new Error('Mano sin tamaño (' + sel + '). Cadena DOM: ' + cadena.join(' → '));
+        }
+        el.click();
+      }, selector);
+    } catch (e) {
+      try {
+        const estado = await pagina.evaluate(() => ({
+          grupoPartida: grupo.partida ? { id: grupo.partida.id, turno: grupo.partida.turnoActual, enCurso: grupo.partida.enCurso } : null,
+          telasVisibles: Array.from(document.querySelectorAll('.tela')).filter(t => !t.classList.contains('hidden')).map(t => t.id),
+          manoSeleccionada: grupo.manoSeleccionada
+        }));
+        console.log('  [DIAG] Estado de la página al fallar:', JSON.stringify(estado));
+        console.log('  [DIAG] ' + e.message.slice(0, 800));
+        await pagina.screenshot({ path: 'debug-fallo-grupo.png' });
+        console.log('  [DIAG] Captura: debug-fallo-grupo.png');
+      } catch { /* noop */ }
+      throw e;
+    }
+  }
+
+  async function jugarGrupoHastaTerminar(pagLectora, paginasPorUsuario, maxTurnos = 40) {
+    let turnos = 0;
+    let espectadorVerificado = false;
+    let turnosJuego = 0;
+    while (turnos < maxTurnos) {
+      const resVisible = await pagLectora.$eval('#grupo-resultado', el => !el.classList.contains('hidden'));
+      if (resVisible) break;
+
+      const info = await pagLectora.evaluate(() => {
+        const p = grupo.partida;
+        if (!p) return { enCurso: false };
+        return { enCurso: p.enCurso, turno: p.turnoActual, asientos: p.asientos };
+      });
+      if (!info.enCurso) break;
+
+      const miAsiento = info.asientos.find(a => a.username === info.turno);
+      const victima = info.asientos.find(a => a.username !== info.turno && a.vivo);
+      if (!miAsiento || !victima) break;
+      const miViva = miAsiento.manos.izq.alive ? 'izq' : (miAsiento.manos.der.alive ? 'der' : null);
+      const objViva = victima.manos.izq.alive ? 'izq' : (victima.manos.der.alive ? 'der' : null);
+      if (!miViva || !objViva) break;
+
+      const paginaActiva = paginasPorUsuario[info.turno];
+      if (!paginaActiva) break;
+
+      console.log(`  Turno ${turnos + 1}: ${info.turno} ataca a ${victima.username} (${miViva} → ${objViva})`);
+      // Clic por DOM (robusto con asientos en círculo): dispara el mismo handler real
+      await clickManoGrupo(paginaActiva, `.asiento[data-username="${info.turno}"] .mano-grupo[data-lado="${miViva}"]`);
+      await esperar(150);
+      await clickManoGrupo(paginaActiva, `.asiento[data-username="${victima.username}"] .mano-grupo[data-lado="${objViva}"]`);
+
+      const turnoAntes = info.turno;
+      await pagLectora.waitForFunction(
+        (prev) => {
+          if (!document.getElementById('grupo-resultado').classList.contains('hidden')) return true;
+          const p = grupo.partida;
+          return p && p.turnoActual !== prev;
+        },
+        { timeout: 6000 },
+        turnoAntes
+      ).catch(() => console.log('  [AVISO] timeout turno grupo'));
+      await esperar(300);
+      turnos++;
+
+      // ¿Alguien quedó eliminado y la partida sigue? → verificar espectador
+      const post = await pagLectora.evaluate(() => {
+        const p = grupo.partida;
+        if (!p) return null;
+        return { enCurso: p.enCurso, eliminados: p.asientos.filter(a => !a.vivo).map(a => a.username) };
+      });
+      if (!espectadorVerificado && post && post.enCurso && post.eliminados.length > 0) {
+        const eliminado = post.eliminados[0];
+        const pagEliminado = paginasPorUsuario[eliminado];
+        if (pagEliminado) {
+          const specOk = await pagEliminado.evaluate(() => ({
+            botonVisible: !document.getElementById('btn-grupo-abandonar').hidden,
+            mesaVisible: !document.getElementById('tela-grupo-juego').classList.contains('hidden')
+          }));
+          check(`Espectador: ${eliminado} sigue viendo la partida con botón "Volver al menú"`,
+            specOk.botonVisible && specOk.mesaVisible);
+          espectadorVerificado = true;
+        }
+      }
+    }
+    turnosJuego = turnos;
+    return turnosJuego;
+  }
+
+  // TEST 13: Grupo completo con 3 jugadores (A crea grupo con B y C)
+  console.log('\n=== TEST 13: Grupo 3 jugadores (crear, aceptar, mesa circular, partida) ===');
+
+  // Registrar tercer jugador (jugadortres) en su propio contexto aislado
+  const ctx4 = await crearContexto();
+  const pag4 = await ctx4.newPage();
+  await pag4.setViewport({ width: 800, height: 900 });
+  pag4.on('pageerror', e => erroresConsola.pag4.push('PAG4: ' + e.message));
+  pag4.on('console', m => { if (m.type() === 'error') erroresConsola.pag4.push('PAG4: ' + m.text()); });
+  await pag4.goto(URL, { waitUntil: 'networkidle0' });
+  await pag4.click('#mostrar-registrar');
+  await pag4.type('#username-reg', NOMBRE3);
+  await pag4.type('#password-reg', 'pass1234');
+  await pag4.click('#form-registrar button[type=submit]');
+  await pag4.waitForFunction(
+    () => !document.getElementById('tela-juego').classList.contains('hidden'),
+    { timeout: 15000 }
+  );
+  check(`Tercer jugador registrado: ${NOMBRE3}`, true);
+  const cod3 = await pag4.$eval('#mi-codigo-amigo', el => el.textContent);
+  console.log(`  Código de amigo de ${NOMBRE3}: ${cod3}`);
+
+  // Amistad A (jugadoruno) → C (jugadortres). B y C NO son amigos entre sí (así lo exige el escenario)
+  await pag1.click('#btn-amigos');
+  await esperar(400);
+  await pag1.type('#codigo-amigo-input', cod3);
+  await pag1.click('#btn-agregar-amigo');
+  await pag4.click('#btn-amigos');
+  await pag4.waitForFunction(
+    () => !!document.querySelector('#solicitudes-lista .solicitud-item'),
+    { timeout: 15000 }
+  );
+  await pag4.click('#solicitudes-lista .solicitud-item .btn-mini');
+  await pag4.waitForFunction(
+    () => !!document.querySelector('#amigos-lista .amigo-item'),
+    { timeout: 20000 }
+  );
+  check('Amistad A→C creada (B y C siguen SIN ser amigos)', true);
+  await pag4.click('#btn-volver-juego');
+  await pag1.click('#btn-volver-juego');
+
+  // A abre "Crear Grupo" y selecciona a B y C
+  await pag1.click('#btn-crear-grupo');
+  await pag1.waitForFunction(
+    () => document.querySelectorAll('#grupo-amigos-lista .grupo-amigo-item').length >= 2,
+    { timeout: 15000 }
+  );
+  check('Pantalla crear grupo muestra ambos amigos', true);
+  await pag1.evaluate(() => {
+    document.querySelectorAll('#grupo-amigos-lista .grupo-amigo-item').forEach(i => i.click());
+  });
+  await esperar(200);
+  check('Contador de seleccionados: 2',
+    (await pag1.$eval('#grupo-contador', el => el.textContent)).includes('Seleccionados: 2'));
+  check('Botón crear grupo habilitado', !(await pag1.$eval('#btn-grupo-confirmar', el => el.disabled)));
+
+  // Crear el grupo → sala de espera con contador
+  await pag1.click('#btn-grupo-confirmar');
+  await pag1.waitForFunction(
+    () => !document.getElementById('tela-grupo-espera').classList.contains('hidden'),
+    { timeout: 10000 }
+  );
+  check('Sala de espera visible', true);
+  const cuentaInicial = parseInt(await pag1.$eval('#grupo-espera-cuenta', el => el.textContent));
+  check(`Contador de expiración activo (${cuentaInicial}s)`, cuentaInicial > 0 && cuentaInicial <= 8);
+
+  // B y C reciben la invitación a grupo
+  const overlayB = await pag2.waitForFunction(
+    () => !document.getElementById('grupo-invitacion-overlay').classList.contains('hidden'),
+    { timeout: 10000 }
+  ).then(() => true).catch(() => false);
+  const overlayC = await pag4.waitForFunction(
+    () => !document.getElementById('grupo-invitacion-overlay').classList.contains('hidden'),
+    { timeout: 10000 }
+  ).then(() => true).catch(() => false);
+  check('B recibe invitación a grupo', overlayB);
+  check('C recibe invitación a grupo', overlayC);
+  const textoInvC = await pag4.$eval('#grupo-invitacion-texto', el => el.textContent);
+  // El texto lista a TODOS los miembros del grupo excepto al receptor (incluye al creador)
+  check(`Texto de invitación: "${textoInvC}"`,
+    textoInvC === `${NOMBRE1} te invita a un grupo con: ${NOMBRE1}, ${NOMBRE2}`);
+
+  // B acepta primero → sigue en espera; C acepta al final → la partida inicia
+  await pag2.click('#btn-grupo-aceptar');
+  await esperar(600);
+  check('B aceptó: sigue en espera (falta C)',
+    await pag1.$eval('#grupo-espera-lista', el => el.textContent.includes('Pendiente')));
+  await pag4.click('#btn-grupo-aceptar');
+
+  // Los tres ven la mesa circular
+  const mesa1 = await pag1.waitForFunction(
+    () => document.querySelectorAll('#mesa-circular .asiento').length === 3,
+    { timeout: 15000 }
+  ).then(() => true).catch(() => false);
+  await pag2.waitForFunction(
+    () => document.querySelectorAll('#mesa-circular .asiento').length === 3,
+    { timeout: 15000 }
+  ).catch(() => {});
+  await pag4.waitForFunction(
+    () => document.querySelectorAll('#mesa-circular .asiento').length === 3,
+    { timeout: 15000 }
+  ).catch(() => {});
+  check('Mesa circular con 3 asientos visible en A', mesa1);
+  await pag1.screenshot({ path: 'debug-mesa-circular.png' });
+  console.log('  (Captura de la mesa: debug-mesa-circular.png)');
+
+  const estadoInicial = await pag1.evaluate(() => {
+    const p = grupo.partida;
+    return { turno: p ? p.turnoActual : null, asientos: p ? p.asientos.map(a => a.username) : [] };
+  });
+  check(`Empieza el CREADOR (${NOMBRE1}): turno=${estadoInicial.turno}`,
+    estadoInicial.turno === NOMBRE1);
+  check(`Asientos: [${estadoInicial.asientos.join(', ')}]`,
+    estadoInicial.asientos[0] === NOMBRE1 && estadoInicial.asientos.length === 3);
+
+  // Jugar la partida de grupo (regla: la víctima juega)
+  console.log('  --- Partida de grupo ---');
+  const turnosGrupo = await jugarGrupoHastaTerminar(pag1, {
+    [NOMBRE1]: pag1,
+    [NOMBRE2]: pag2,
+    [NOMBRE3]: pag4
+  });
+
+  // Resultados en las tres páginas
+  const fin1 = await pag1.evaluate(() => ({
+    visible: !document.getElementById('grupo-resultado').classList.contains('hidden'),
+    titulo: document.getElementById('grupo-resultado-titulo').textContent,
+    texto: document.getElementById('grupo-resultado-texto').textContent
+  }));
+  check(`Partida de grupo terminó (${turnosGrupo} turnos)`, fin1.visible);
+  check(`Ganador determinístico con la estrategia: ${NOMBRE1}`, fin1.titulo.includes('GANASTE'));
+  check('Texto del ganador incluye +150 EXP', fin1.texto.includes('+150 EXP'));
+
+  const fin2 = await pag2.evaluate(() => ({
+    visible: !document.getElementById('grupo-resultado').classList.contains('hidden'),
+    texto: document.getElementById('grupo-resultado-texto').textContent
+  }));
+  const fin4 = await pag4.evaluate(() => ({
+    visible: !document.getElementById('grupo-resultado').classList.contains('hidden'),
+    texto: document.getElementById('grupo-resultado-texto').textContent
+  }));
+  check('Perdedores ven su resultado (B)', fin2.visible && fin2.texto.includes('+10 EXP'));
+  check('Perdedores ven su resultado (C)', fin4.visible && fin4.texto.includes('+10 EXP'));
+
+  // EXP y rachas de grupo: ganador +150 (racha previa+1), perdedores +10 (racha 0)
+  check(`Racha del ganador en texto (${fin1.texto})`, /Racha actual: \d+/.test(fin1.texto));
+  check(`Racha de B en 0 tras perder (${fin2.texto})`, fin2.texto.includes('Racha actual: 0'));
+  check(`Racha de C en 0 tras perder (${fin4.texto})`, fin4.texto.includes('Racha actual: 0'));
+
+  // EXP del encabezado del tercer jugador (solo jugó el grupo y PERDIÓ): 0 + 10 = 10
+  const exp4 = await pag4.$eval('#exp-display', el => el.textContent);
+  check(`EXP de ${NOMBRE3} tras perder el grupo: "${exp4}"`, exp4 === '10 EXP');
+
+  // Volver al menú en los tres (clic por DOM: inmune a toasts que tapan coordenadas)
+  for (const pag of [pag1, pag2, pag4]) {
+    await pag.evaluate(() => {
+      const btn = document.getElementById('btn-grupo-volver-menu');
+      if (!btn) throw new Error('Botón volver al menú no encontrado');
+      btn.click();
+    });
+  }
+  const enMenu4 = await pag4.waitForFunction(
+    () => !document.getElementById('tela-juego').classList.contains('hidden'),
+    { timeout: 10000 }
+  ).then(() => true).catch(() => false);
+  check('Los tres vuelven al menú', enMenu4);
+
+  // TEST 14: Rechazo y expiración de grupos
+  console.log('\n=== TEST 14: Grupo rechazado y grupo expirado ===');
+
+  // --- Rechazo: B rechaza → grupo disuelto y todos notificados ---
+  await pag1.click('#btn-crear-grupo');
+  await pag1.waitForFunction(
+    () => document.querySelectorAll('#grupo-amigos-lista .grupo-amigo-item').length >= 2,
+    { timeout: 15000 }
+  );
+  await pag1.evaluate(() => {
+    document.querySelectorAll('#grupo-amigos-lista .grupo-amigo-item').forEach(i => i.click());
+  });
+  await pag1.click('#btn-grupo-confirmar');
+  await pag1.waitForFunction(
+    () => !document.getElementById('tela-grupo-espera').classList.contains('hidden'),
+    { timeout: 10000 }
+  );
+  await pag2.waitForFunction(
+    () => !document.getElementById('grupo-invitacion-overlay').classList.contains('hidden'),
+    { timeout: 10000 }
+  );
+  await pag2.click('#btn-grupo-rechazar');
+  const volvioMenu1 = await pag1.waitForFunction(
+    () => !document.getElementById('tela-juego').classList.contains('hidden'),
+    { timeout: 10000 }
+  ).then(() => true).catch(() => false);
+  check('B rechaza → A vuelve al menú (grupo disuelto)', volvioMenu1);
+  const overlayCerrado2 = await pag2.evaluate(() =>
+    document.getElementById('grupo-invitacion-overlay').classList.contains('hidden'));
+  check('Overlay de B cerrado tras disolver', overlayCerrado2);
+
+  // --- Expiración: nadie responde → auto-cancelado tras el tiempo de espera ---
+  await pag1.click('#btn-crear-grupo');
+  await pag1.waitForFunction(
+    () => document.querySelectorAll('#grupo-amigos-lista .grupo-amigo-item').length >= 2,
+    { timeout: 15000 }
+  );
+  await pag1.evaluate(() => {
+    document.querySelectorAll('#grupo-amigos-lista .grupo-amigo-item').forEach(i => i.click());
+  });
+  await pag1.click('#btn-grupo-confirmar');
+  await pag1.waitForFunction(
+    () => !document.getElementById('tela-grupo-espera').classList.contains('hidden'),
+    { timeout: 10000 }
+  );
+  check('Grupo creado (nadie responderá)', true);
+
+  // Esperar la expiración automática (8s de prueba) + margen
+  const expirado = await pag1.waitForFunction(
+    () => !document.getElementById('tela-juego').classList.contains('hidden'),
+    { timeout: 15000 }
+  ).then(() => true).catch(() => false);
+  check('Grupo expiró solo → A vuelve al menú', expirado);
+  const overlayCerrado3 = await pag2.evaluate(() =>
+    document.getElementById('grupo-invitacion-overlay').classList.contains('hidden'));
+  check('Invitación de B cerrada al expirar', overlayCerrado3);
+
+  // TEST 15: Errores de consola en TODA la sesión
+  console.log('\n=== TEST 15: Errores de consola en TODA la sesión ===');
+  const totalErrores = erroresConsola.pag1.length + erroresConsola.pag2.length + erroresConsola.pag4.length;
+  console.log(`  Errores pag1: ${erroresConsola.pag1.length}, pag2: ${erroresConsola.pag2.length}, pag4: ${erroresConsola.pag4.length}`);
   erroresConsola.pag1.forEach(e => console.log(`    PAG1: ${e}`));
   erroresConsola.pag2.forEach(e => console.log(`    PAG2: ${e}`));
+  erroresConsola.pag4.forEach(e => console.log(`    PAG4: ${e}`));
   check(`Cero errores de consola (total: ${totalErrores})`, totalErrores === 0);
 
   // RESUMEN
@@ -524,6 +905,7 @@ async function main() {
       await dbLimpieza.init();
       await dbLimpieza.borrarUsuariosTest('jugadoruno');
       await dbLimpieza.borrarUsuariosTest('jugadordos');
+      await dbLimpieza.borrarUsuariosTest('jugadortres');
       console.log('(BD: usuarios de prueba eliminados — la base queda limpia)');
     } catch (e) {
       console.log('(AVISO) No se pudo limpiar la BD:', e.message);

@@ -1,5 +1,5 @@
 // ===== TEST DE REGLAS DEL JUEGO (lógica pura del servidor) =====
-const { ejecutarAtaque, ejecutarDivision, construirRanking } = require('./server');
+const { ejecutarAtaque, ejecutarDivision, construirRanking, danioMano, siguienteTurnoGrupo } = require('./server');
 
 let fallos = 0;
 function check(nombre, condicion, extra) {
@@ -190,6 +190,80 @@ console.log('\n=== TEST 14: Usuario dentro del top con lista grande ===');
   check('Mi puesto global es 21', r.miPuesto === 21, r.miPuesto);
   check('Estoy dentro del top', r.top.some(u => u.username === 'user10'));
   check('Estando en el top, "yo" es null', r.yo === null);
+}
+
+console.log('\n=== TEST 15: Ranking incluye rachas ===');
+{
+  const users = {
+    alfa: { exp: 300, nivel: 2, racha: 4, mejorRacha: 7 },
+    beta: { exp: 300, nivel: 2, racha: 0, mejorRacha: 2 }
+  };
+  const r = construirRanking(users, 'beta');
+  check('Racha actual en el top', r.top.find(u => u.username === 'alfa').racha === 4, r.top);
+  check('Mejor racha histórica en el top', r.top.find(u => u.username === 'alfa').mejorRacha === 7);
+  check('Racha 0 presente', r.top.find(u => u.username === 'beta').racha === 0);
+}
+
+console.log('\n=== TEST 16: danioMano (motor de grupos) — mismas reglas de Deditos ===');
+{
+  // Suma normal
+  const m1 = { izq: { count: 1, alive: true }, der: { count: 1, alive: true } };
+  danioMano(m1, 'izq', 2);
+  check('Suma simple: 1+2=3', m1.izq.count === 3 && m1.izq.alive);
+
+  // Muerte exacta (5)
+  const m2 = { izq: { count: 3, alive: true }, der: { count: 2, alive: true } };
+  danioMano(m2, 'izq', 2);
+  check('Muerte exacta en 5', m2.izq.alive === false && m2.izq.count === 5);
+  check('La otra mano intacta', m2.der.count === 2 && m2.der.alive);
+
+  // Exceso revive mano muerta (escenario del usuario)
+  const m3 = { izq: { count: 3, alive: true }, der: { count: 5, alive: false } };
+  danioMano(m3, 'izq', 3); // 6 > 5 → muere + exceso 1 revive der
+  check('Exceso revive mano muerta con 1', m3.izq.alive === false && m3.der.alive === true && m3.der.count === 1, m3);
+
+  // Exceso mata la otra mano viva
+  const m4 = { izq: { count: 4, alive: true }, der: { count: 4, alive: true } };
+  danioMano(m4, 'izq', 4); // 8 → muere izq, exceso 3 → der 4+3=7 ≥ 5 → muere
+  check('Exceso mata también la otra mano', m4.izq.alive === false && m4.der.alive === false, m4);
+}
+
+console.log('\n=== TEST 17: siguienteTurnoGrupo — la VÍCTIMA juega ===');
+{
+  const asientos = [
+    { username: 'A', vivo: true },
+    { username: 'B', vivo: true },
+    { username: 'C', vivo: true },
+    { username: 'D', vivo: true }
+  ];
+  // A ataca a D (índice 3): el turno es de D
+  check('La víctima (D) recibe el turno', siguienteTurnoGrupo(asientos, 3) === 'D');
+  // D ataca a B (índice 1): el turno es de B
+  check('La víctima (B) recibe el turno', siguienteTurnoGrupo(asientos, 1) === 'B');
+}
+
+console.log('\n=== TEST 18: siguienteTurnoGrupo — víctima ELIMINADA → próximo vivo ===');
+{
+  const asientos = [
+    { username: 'A', vivo: true },
+    { username: 'B', vivo: false },
+    { username: 'C', vivo: true },
+    { username: 'D', vivo: true }
+  ];
+  // C ataca a A y lo elimina → próximo vivo tras A (índice 0): B está muerto → C
+  asientos[0].vivo = false;
+  check('Víctima eliminada: salta muertos (B) hasta C', siguienteTurnoGrupo(asientos, 0) === 'C');
+
+  // Eliminados consecutivos con wrap-around
+  const asientos2 = [
+    { username: 'A', vivo: true },
+    { username: 'B', vivo: true },
+    { username: 'C', vivo: false },
+    { username: 'D', vivo: false }
+  ];
+  // A (índice 0) es eliminado → próximo: B (vivo)
+  asientos2[0].vivo = false;
+  check('Wrap-around del orden de la mesa', siguienteTurnoGrupo(asientos2, 0) === 'B');
 }
 
 console.log('\n========== RESUMEN REGLAS ==========');

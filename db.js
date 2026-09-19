@@ -26,7 +26,16 @@ function crearCapaDatos(url) {
       async getUser(username) {
         const u = users[username];
         if (!u) return null;
-        return { username, passwordHash: u.passwordHash, exp: u.exp, nivel: u.nivel, codigo: u.codigo, friends: [...u.friends] };
+        return {
+          username,
+          passwordHash: u.passwordHash,
+          exp: u.exp,
+          nivel: u.nivel,
+          codigo: u.codigo,
+          friends: [...u.friends],
+          racha: u.racha || 0,
+          mejorRacha: u.mejorRacha || 0
+        };
       },
 
       async getUserByCodigo(codigo) {
@@ -39,8 +48,8 @@ function crearCapaDatos(url) {
       },
 
       async createUser(username, passwordHash, codigo) {
-        users[username] = { passwordHash, exp: 0, nivel: 1, codigo, friends: [] };
-        return { username, passwordHash, exp: 0, nivel: 1, codigo, friends: [] };
+        users[username] = { passwordHash, exp: 0, nivel: 1, codigo, friends: [], racha: 0, mejorRacha: 0 };
+        return { username, passwordHash, exp: 0, nivel: 1, codigo, friends: [], racha: 0, mejorRacha: 0 };
       },
 
       async updateUser(username, campos) {
@@ -49,6 +58,8 @@ function crearCapaDatos(url) {
         if (campos.exp !== undefined) u.exp = campos.exp;
         if (campos.nivel !== undefined) u.nivel = campos.nivel;
         if (campos.friends !== undefined) u.friends = [...campos.friends];
+        if (campos.racha !== undefined) u.racha = campos.racha;
+        if (campos.mejorRacha !== undefined) u.mejorRacha = campos.mejorRacha;
       },
 
       async addFriendMutual(a, b) {
@@ -104,7 +115,7 @@ function crearCapaDatos(url) {
       async getAllUsersForRanking() {
         const resultado = {};
         Object.keys(users).forEach(n => {
-          resultado[n] = { exp: users[n].exp, nivel: users[n].nivel };
+          resultado[n] = { exp: users[n].exp, nivel: users[n].nivel, racha: users[n].racha || 0, mejorRacha: users[n].mejorRacha || 0 };
         });
         return resultado;
       },
@@ -153,6 +164,8 @@ function crearCapaDatos(url) {
       username TEXT NOT NULL,
       creado TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS racha INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS mejor_racha INTEGER NOT NULL DEFAULT 0;
   `;
 
   function parseFriends(json) {
@@ -169,7 +182,7 @@ function crearCapaDatos(url) {
 
     async getUser(username) {
       const r = await pool.query(
-        'SELECT username, password_hash, exp, nivel, codigo, friends FROM users WHERE username = $1',
+        'SELECT username, password_hash, exp, nivel, codigo, friends, racha, mejor_racha AS "mejorRacha" FROM users WHERE username = $1',
         [username]
       );
       if (r.rows.length === 0) return null;
@@ -180,7 +193,9 @@ function crearCapaDatos(url) {
         exp: f.exp,
         nivel: f.nivel,
         codigo: f.codigo,
-        friends: parseFriends(f.friends)
+        friends: parseFriends(f.friends),
+        racha: f.racha,
+        mejorRacha: f.mejorRacha
       };
     },
 
@@ -197,25 +212,31 @@ function crearCapaDatos(url) {
       return r.rows.length > 0;
     },
 
-    async createUser(username, passwordHash, codigo) {
-      await pool.query(
-        'INSERT INTO users (username, password_hash, codigo) VALUES ($1, $2, $3)',
-        [username, passwordHash, codigo]
-      );
-      return { username, passwordHash, exp: 0, nivel: 1, codigo, friends: [] };
-    },
+      async createUser(username, passwordHash, codigo) {
+        await pool.query(
+          'INSERT INTO users (username, password_hash, codigo) VALUES ($1, $2, $3)',
+          [username, passwordHash, codigo]
+        );
+        return { username, passwordHash, exp: 0, nivel: 1, codigo, friends: [], racha: 0, mejorRacha: 0 };
+      },
 
-    async updateUser(username, campos) {
-      if (campos.exp !== undefined) {
-        await pool.query('UPDATE users SET exp = $1 WHERE username = $2', [campos.exp, username]);
-      }
-      if (campos.nivel !== undefined) {
-        await pool.query('UPDATE users SET nivel = $1 WHERE username = $2', [campos.nivel, username]);
-      }
-      if (campos.friends !== undefined) {
-        await pool.query('UPDATE users SET friends = $1 WHERE username = $2', [JSON.stringify(campos.friends), username]);
-      }
-    },
+      async updateUser(username, campos) {
+        if (campos.exp !== undefined) {
+          await pool.query('UPDATE users SET exp = $1 WHERE username = $2', [campos.exp, username]);
+        }
+        if (campos.nivel !== undefined) {
+          await pool.query('UPDATE users SET nivel = $1 WHERE username = $2', [campos.nivel, username]);
+        }
+        if (campos.friends !== undefined) {
+          await pool.query('UPDATE users SET friends = $1 WHERE username = $2', [JSON.stringify(campos.friends), username]);
+        }
+        if (campos.racha !== undefined) {
+          await pool.query('UPDATE users SET racha = $1 WHERE username = $2', [campos.racha, username]);
+        }
+        if (campos.mejorRacha !== undefined) {
+          await pool.query('UPDATE users SET mejor_racha = $1 WHERE username = $2', [campos.mejorRacha, username]);
+        }
+      },
 
     async addFriendMutual(a, b) {
       const ra = await pool.query('SELECT friends FROM users WHERE username = $1', [a]);
@@ -287,9 +308,9 @@ function crearCapaDatos(url) {
     },
 
     async getAllUsersForRanking() {
-      const r = await pool.query('SELECT username, exp, nivel FROM users');
+      const r = await pool.query('SELECT username, exp, nivel, racha, mejor_racha AS "mejorRacha" FROM users');
       const resultado = {};
-      r.rows.forEach(f => { resultado[f.username] = { exp: f.exp, nivel: f.nivel }; });
+      r.rows.forEach(f => { resultado[f.username] = { exp: f.exp, nivel: f.nivel, racha: f.racha, mejorRacha: f.mejorRacha }; });
       return resultado;
     },
 

@@ -607,6 +607,236 @@ body {
 .btn-inv-rechazar { background: var(--error); color: #fff; }
 .btn-inv-rechazar:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(255, 68, 68, 0.4); }
 
+/* ===== GRUPOS (modo 3-6 jugadores) ===== */
+.contenedor-grupo {
+  width: 100%;
+  max-width: 500px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 28px 25px;
+}
+
+#tela-grupo-crear h2, #tela-grupo-espera h2 {
+  font-family: 'Orbitron', sans-serif;
+  color: var(--primary);
+  text-align: center;
+  letter-spacing: 4px;
+  margin-bottom: 14px;
+  font-size: 1.1rem;
+}
+
+.grupo-explicacion {
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-align: center;
+  margin-bottom: 18px;
+  line-height: 1.4;
+}
+
+.grupo-amigos-lista {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 40vh;
+  overflow-y: auto;
+  margin-bottom: 15px;
+}
+
+.grupo-amigo-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 0.2s, transform 0.15s;
+}
+
+.grupo-amigo-item:hover:not(.desconectado) { border-color: var(--primary); transform: translateY(-1px); }
+
+.grupo-amigo-item.seleccionado {
+  border-color: var(--primary);
+  background: rgba(0, 255, 136, 0.08);
+  box-shadow: 0 0 10px rgba(0, 255, 136, 0.2);
+}
+
+.grupo-amigo-item.desconectado { opacity: 0.4; cursor: not-allowed; }
+
+.grupo-amigo-check {
+  width: 20px; height: 20px;
+  border: 2px solid var(--muted);
+  border-radius: 5px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #000;
+  font-weight: 900;
+  font-size: 0.8rem;
+}
+
+.grupo-amigo-item.seleccionado .grupo-amigo-check {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+.grupo-amigo-item.seleccionado .grupo-amigo-check::after { content: '✓'; }
+
+.grupo-amigo-nombre { flex-grow: 1; word-break: break-all; }
+
+.grupo-contador {
+  text-align: center;
+  color: var(--alerta);
+  font-size: 0.85rem;
+  margin-bottom: 15px;
+  font-family: 'Orbitron', sans-serif;
+}
+
+.grupo-botones { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+
+/* Sala de espera */
+.grupo-espera-cuenta {
+  text-align: center;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 2rem;
+  color: var(--alerta);
+  margin-bottom: 15px;
+  text-shadow: 0 0 15px rgba(255, 170, 0, 0.4);
+}
+
+.grupo-espera-lista { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+
+.grupo-espera-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.grupo-espera-item .estado-grupo { margin-left: auto; font-size: 0.85rem; font-weight: 700; }
+.grupo-espera-item .pendiente { color: var(--alerta); }
+.grupo-espera-item .aceptado { color: var(--primary); }
+
+#btn-cancelar-grupo { margin: 0 auto; display: block; padding: 12px 30px; border: none; border-radius: 10px; cursor: pointer; font-family: 'Orbitron', sans-serif; }
+
+/* Partida de grupo */
+#tela-grupo-juego { justify-content: flex-start; padding-top: 15px; }
+
+#tela-grupo-juego .header-juego { max-width: 700px; margin-bottom: 10px; padding: 10px 20px; }
+
+.grupo-mensaje {
+  max-width: 700px;
+  color: var(--alerta);
+  font-size: 0.85rem;
+  text-align: center;
+  min-height: 22px;
+  margin-bottom: 8px;
+  padding: 0 15px;
+}
+
+.mesa-circular {
+  position: relative;
+  width: min(92vw, 640px);
+  height: min(70vh, 560px);
+  margin: 0 auto;
+}
+
+.mesa-tabla {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 62%; height: 62%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 35%, #1c2b1c, #12211a);
+  border: 3px solid #2a4a33;
+  box-shadow: inset 0 0 60px rgba(0, 255, 136, 0.05), 0 0 40px rgba(0, 0, 0, 0.5);
+}
+
+.asiento {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  background: var(--surface2);
+  border: 2px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 12px;
+  text-align: center;
+  min-width: 118px;
+  z-index: 2;
+}
+
+.asiento.yo { border-color: var(--primary); }
+
+.asiento.turno {
+  border-color: var(--alerta);
+  box-shadow: 0 0 22px rgba(255, 170, 0, 0.45);
+  animation: pulso 1.2s infinite;
+}
+
+.asiento.eliminado { opacity: 0.35; filter: grayscale(0.8); }
+
+.asiento-nombre {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 0.72rem;
+  color: var(--primary);
+  margin-bottom: 6px;
+  word-break: break-all;
+  max-width: 150px;
+}
+
+.asiento .manos { display: flex; gap: 8px; justify-content: center; }
+
+.asiento .mano-grupo {
+  width: 52px; min-height: 72px;
+  background: linear-gradient(145deg, #262633, #1a1a24);
+  border: 2px solid #3a3a4a;
+  border-radius: 10px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s, border-color 0.2s;
+  user-select: none;
+}
+
+.asiento .mano-grupo:hover { transform: scale(1.06); border-color: var(--primary); }
+
+.asiento .mano-grupo .dedos {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 1.5rem;
+  font-weight: 900;
+  color: var(--primary);
+  text-shadow: 0 0 8px rgba(0, 255, 136, 0.5);
+}
+
+.asiento .mano-grupo.muerta {
+  background: #0d0d0d;
+  border-color: #1f1f1f;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.asiento .mano-grupo.muerta .dedos { color: var(--error); }
+
+.asiento .mano-grupo.seleccionada {
+  border-color: var(--alerta);
+  box-shadow: 0 0 14px rgba(255, 170, 0, 0.6);
+}
+
+.asiento .estado-asiento {
+  font-size: 0.6rem;
+  color: var(--muted);
+  margin-top: 4px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.asiento.eliminado .estado-asiento { color: var(--error); }
+
 /* ===== RANKING GLOBAL ===== */
 .contenedor-ranking {
   width: 100%;
@@ -687,6 +917,11 @@ body {
   margin: 8px 0;
   font-size: 1rem;
 }
+
+/* Columnas extra del ranking (rachas) */
+.fila-ranking.ranking-6col { grid-template-columns: 55px 1fr 75px 60px 80px 80px; }
+.fila-ranking .racha { color: #ff8844; text-align: right; }
+.fila-ranking .mejor { color: #c0c0c0; text-align: right; }
 
 .btn-volver-al-juego {
   width: 100%;

@@ -19,7 +19,14 @@ const idsRequeridos = [
   'solicitudes-lista', 'amigos-lista', 'btn-volver-juego',
   'codigo-amigo-input', 'btn-agregar-amigo',
   'invitacion-overlay', 'invitacion-texto', 'btn-aceptar-inv', 'btn-rechazar-inv',
-  'tela-ranking', 'mi-puesto', 'tabla-ranking', 'btn-ranking', 'btn-volver-juego2'
+  'tela-ranking', 'mi-puesto', 'tabla-ranking', 'btn-ranking', 'btn-volver-juego2',
+  'btn-crear-grupo',
+  'tela-grupo-crear', 'grupo-amigos-lista', 'grupo-contador', 'btn-grupo-confirmar', 'btn-grupo-volver',
+  'tela-grupo-espera', 'grupo-espera-cuenta', 'grupo-espera-lista', 'btn-cancelar-grupo',
+  'tela-grupo-juego', 'grupo-username-display', 'grupo-indicador-turno', 'grupo-mensaje',
+  'mesa-circular', 'btn-grupo-dividir', 'btn-grupo-abandonar',
+  'grupo-resultado', 'grupo-resultado-titulo', 'grupo-resultado-texto', 'btn-grupo-volver-menu',
+  'grupo-invitacion-overlay', 'grupo-invitacion-texto', 'btn-grupo-aceptar', 'btn-grupo-rechazar'
 ];
 
 let faltantes = [];

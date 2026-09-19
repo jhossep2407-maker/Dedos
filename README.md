@@ -82,17 +82,31 @@ express, socket.io, bcrypt, cors, uuid
 
 #### 2. MODOS DE JUEGO
 
-**Modo Partida Rápida:**
-- Clic "Jugar Rápido" → crea partida pública
+**Modo Partida Rápida (1v1):**
+- Clic "Crear Partida" → crea partida pública
 - Comparte el código de 6 caracteres que aparece
 - Cualquiera puede unirse con ese código
 - Ideal para oponentes aleatorios
 
-**Modo Amigo:**
-- Usa tu código personal: `DEDITOS@TU_NOMBRE`
-- Compartir con amigo
-- Amigo ingresa tu código → solicitud de amistad
-- Aceptar → partida privada 1v1
+**Modo Amigo (1v1):**
+- Agrega amigos con su código personal de 6 caracteres
+- Amigo conectado → clic en él → reto directo con Aceptar/Rechazar
+- Partida privada 1v1 sin códigos
+
+**Modo Grupo (3-6 jugadores) — NUEVO:**
+- Clic "Crear Grupo" → selecciona tus amigos conectados (ellos NO necesitan ser amigos entre sí)
+- Todos reciben invitación con Aceptar/Rechazar
+- La partida SOLO empieza cuando TODOS aceptaron
+- Sala de espera con contador: auto-cancelación a los 60s (el creador también puede cancelar)
+- Mesa circular: cada jugador se ve a sí mismo abajo, los demás alrededor
+- Empieza el CREADOR; tras cada ataque, el turno es de la VÍCTIMA (si fue eliminada, sigue el próximo vivo en la mesa)
+- Al quedar eliminado sigues viendo la partida como espectador (con botón "Volver al menú")
+- Gana el último jugador con manos vivas: +150 EXP (racha+1), los demás +10 EXP (racha a 0)
+
+**Rachas de invictos — NUEVO:**
+- Racha actual: +1 por cada victoria, se reinicia a 0 al perder
+- Mejor racha histórica (récord personal)
+- Ambas se muestran en el Ranking Global y en la pantalla de resultado
 
 #### 3. CONTROLES DEL JUEGO
 
